@@ -35,7 +35,7 @@
 
 
 // ---- App settings ----
-#define APP_NAME        "ESP32 ND Master"
+#define APP_NAME        "ESP32S ND Master"
 #define APP_VERSION     "0.1.0"
 
 // Optional: pool/port, pins, etc.

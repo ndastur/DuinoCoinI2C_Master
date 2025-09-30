@@ -7,7 +7,7 @@
 
 #define CLIENT_CONNECT_EVERY 30000
 #define CLIENT_TIMEOUT_CONNECTION 30000
-#define CLIENT_TIMEOUT_REQUEST 100
+#define STATE_STUCK_TIMEOUT 30000UL
 
 #define END_TOKEN  '\n'
 #define SEP_TOKEN  ','
@@ -15,8 +15,9 @@
 #define GOOD "GOOD"
 #define BLOCK "BLOCK"
 
-#define HASHRATE_FORCE false
-#define HASHRATE_SPEED 258.0
+#define AVR_WORKER_MINER "AVR I2C v4.3"
+#define AVR_WORKER_JOB "AVR"
+#define ESP_WORKER_JOB "ESP32S"
 
 // --- Events ---
 enum MinerEvent : uint8_t {
@@ -66,7 +67,7 @@ class MinerClient {
     bool connect();
     bool isConnected();
     void reset();
-    void start_mining();
+    void setMining(bool flag = true);
     void stop_mining();
 
     String get_chip_id();
@@ -83,9 +84,10 @@ class MinerClient {
 
   private:
     // State Machine
-    enum Duino_State : uint8_t {
+    enum DUINO_STATE : uint8_t {
       DUINO_STATE_NONE,
       DUINO_STATE_IDLE,
+      DUINO_POOL_CONNECT,
       DUINO_STATE_VERSION_WAIT,
       DUINO_STATE_MOTD_REQUEST,
       DUINO_STATE_MOTD_WAIT,
@@ -95,8 +97,7 @@ class MinerClient {
       DUINO_STATE_SHARE_SUBMITTED,
       DUINO_STATE_SOLVE_FAILED,
       DUINO_STATE_JOB_DONE_SEND,
-      DUINO_STATE_JOB_DONE_WAIT,
-      DUINO_STATE_TBC
+      DUINO_STATE_JOB_DONE_WAIT
     };
 
     // config / identity
@@ -105,20 +106,21 @@ class MinerClient {
     String _username;
     String _chip_id = "";
     String _miner_name = "";  // arbitrary set name for the worker, Auto - will make one, None - not set, otherwise user defined
-    bool _serverConnected = false;
+
     // The starting diff can be a number but also worker type (AVR | ESP32 | ESP32S (single core))
     String _start_diff = "AVR";
     bool _isMasterMiner = false;
-    // network
-    WiFiClient _client;
 
+    // network
+    WiFiClient _client;   // not wifi but the TCP client to the pool
+    uint32_t _last_connect_try = 0;
+    uint8_t _try_count = 0 ;   
     String _poolMOTD;
     String _poolVersion;
 
     // state
-    enum Duino_State _state = DUINO_STATE_NONE;
-    uint32_t  _state_start = 0;
-    uint32_t  _last_connect_try = 0;
+    enum DUINO_STATE _state = DUINO_STATE_NONE;
+    uint32_t  _state_start_ms = 0;
     bool _is_mining = false;
 
     // Mining data
@@ -140,24 +142,25 @@ class MinerClient {
     unsigned int _last_share_count = 0;
     unsigned long _startTime = millis();
 
-    unsigned long _clientsConnectTime = 0;
-    byte _firstClientAddr = 0;
+    unsigned long _poolConnectTime = 0;
 
     // callback
     MinerEventCallback _cb = nullptr;
     void* _cb_user = nullptr;
 
-    void _generate_miner_name();
-    void _set_chip_id();
-    
+    void _set_state(DUINO_STATE state);
+    bool _is_state_stuck();
+
     // I/O helpers
-    bool _connectIfNeeded();
+    bool _connectToPool();
     bool _sendLine(const String& s);
     bool _readLine(String& out, uint32_t timeout_ms);
 
     bool _max_micros_elapsed(unsigned long current, unsigned long max_elapsed);
     void _handleSystemEvents();
-
+    void _generate_miner_name();
+    void _set_chip_id();
+    
     // Protocol steps
     bool _handleMotd();
     bool _requestJob();

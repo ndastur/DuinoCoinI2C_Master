@@ -2,6 +2,7 @@
 #include "config.h"
 #include "pool.h"
 #include "wirewrap.h"
+#include "network_services.h"
 #include "Counter.h"
 #include "DSHA1.h"
 
@@ -9,7 +10,7 @@
 #include <WiFiClient.h>
 
 // ---------------- ctor/config ----------------
-MinerClient::MinerClient(const String& username,   String name)
+MinerClient::MinerClient(const String& username, String name)
   : _username(username), _miner_name(name) {
     init();
   }
@@ -44,7 +45,7 @@ void MinerClient::onEvent(MinerEventCallback cb, void* user_ctx) {
 }
 
 bool MinerClient::connect() {
-  return _connectIfNeeded();
+  return _connectToPool();
 }
 
 bool MinerClient::isConnected() {
@@ -52,7 +53,7 @@ bool MinerClient::isConnected() {
 }
 
 void MinerClient::reset() {
-  _state = DUINO_STATE_NONE;
+  _set_state(DUINO_STATE_NONE);
   _poolMOTD = "";
   _poolVersion = "";
   _share_count = 0;
@@ -60,19 +61,16 @@ void MinerClient::reset() {
   _block_count = 0;
   _last_share_count = 0;
   _startTime = millis();
-  _clientsConnectTime = 0;
-  _firstClientAddr = 0;
+  _poolConnectTime = 0;
 }
 
-void MinerClient::start_mining() {
-  _is_mining = true;
-  // Will get requested in next loop
-  _state = DUINO_STATE_JOB_REQUEST;
+void MinerClient::setMining(bool flag) {
+  _is_mining = flag;
 }
 
 void MinerClient::stop_mining() {
   _is_mining = false;
-  _state = DUINO_STATE_NONE;
+  _set_state(DUINO_STATE_NONE);
 
   if (_client.connected()) {
     _client.stop();
@@ -105,10 +103,10 @@ void MinerClient::request_motd() {
     Serial.println("request_motd() State not idle ...");
     return;
   }
-  _connectIfNeeded();
+  _connectToPool();
 
   _client.println("MOTD");
-  _state = DUINO_STATE_MOTD_WAIT;
+  _set_state(DUINO_STATE_MOTD_WAIT);
 }
 
 /*
@@ -145,15 +143,34 @@ uint8_t __expected_hash[20];
 }
 
 void MinerClient::loop() {
+  // If we're mining always check if we're still connected, if not then
+  // any work will be lost and force new pool connection
+  if(_is_mining && false == this->isConnected()) {
+    _set_state(DUINO_POOL_CONNECT);
+  }
+
+  // Re-start things if we've got stuck in a state for a long time
+  if(_is_state_stuck()) {
+    _host = ""; _port = 0;    // clear the pool, start again
+    if (_client.connected()) {
+      _client.stop();
+    }
+    _set_state(DUINO_POOL_CONNECT);
+  }
+
   switch (_state)
   {
+  case DUINO_POOL_CONNECT:
+    if(shouldTryConnect(_last_connect_try, _try_count)) {
+      _connectToPool();
+    }
+    break;
   case DUINO_STATE_VERSION_WAIT:
     if(_client.available()) {
       _poolVersion = _client.readStringUntil(END_TOKEN);
       
-      _state = DUINO_STATE_IDLE;
+      _set_state(DUINO_STATE_IDLE);
 
-      _serverConnected = true;
       // Only send the connected event once we have a server reply with the version
       char buf[64];
       snprintf(buf, sizeof(buf), "%s:%d ver:%s", _host.c_str(), _port, _poolVersion.c_str());
@@ -164,8 +181,13 @@ void MinerClient::loop() {
   case DUINO_STATE_MOTD_WAIT:
     if(_client.available()) {
       _poolMOTD = _client.readString();
-      _state = DUINO_STATE_IDLE;
+      _set_state(DUINO_STATE_IDLE);
       _emit_text(ME_MOTD, _poolMOTD.c_str());
+
+      if(_is_mining) {
+        // Will get requested in next loop
+        _set_state(DUINO_STATE_JOB_REQUEST);
+      }
     }
     break;
   
@@ -174,7 +196,7 @@ void MinerClient::loop() {
       return;
 
     if(_requestJob()) {
-      _state = DUINO_STATE_JOB_WAIT;
+      _set_state(DUINO_STATE_JOB_WAIT);
       _emit_nodata(ME_JOB_REQUESTED);
     }
     else {
@@ -191,18 +213,18 @@ void MinerClient::loop() {
         _seed = seed;
         _target = target;
         _diff = diff;
-        _state = DUINO_STATE_MINING;
+        _set_state(DUINO_STATE_MINING);
 
         MinerEventData ed;
         ed.seed40 = seed.c_str();
         ed.target40 = target.c_str();
         ed.diff = diff;
         _emit(ME_JOB_RECEIVED, ed);
-      } else if (millis() - _state_start > 5000UL) {
+      }
+      else if (millis() - _state_start_ms > 5000UL) {
         _last_err = F("JOB recv timeout");
         _emit_text(ME_ERROR, _last_err.c_str());
-        _state = DUINO_STATE_TBC;
-        _client.stop();
+        _set_state(DUINO_STATE_JOB_REQUEST);
       }
     }
     break;
@@ -212,15 +234,12 @@ void MinerClient::loop() {
       return;
 
     // Solve + submit, then immediately wait for the text result
-    _state = DUINO_STATE_JOB_DONE_SEND;
+    _set_state(DUINO_STATE_JOB_DONE_SEND);
 
-    _state_start = millis();
     if (this->_solveAndSubmit(_seed, _target, _diff * 100 + 1)) {
-      _state = DUINO_STATE_SHARE_SUBMITTED;
-      _state_start = millis();
+      _set_state(DUINO_STATE_SHARE_SUBMITTED);
     } else {
-      _state = DUINO_STATE_SOLVE_FAILED;
-      _state_start = millis();
+      _set_state(DUINO_STATE_SOLVE_FAILED);
     }
 
     break;
@@ -229,7 +248,7 @@ void MinerClient::loop() {
     this->_handleSubmitResponse();
     
     // Get a new job, regardless of the result
-    _state = DUINO_STATE_JOB_REQUEST;
+    _set_state(DUINO_STATE_JOB_REQUEST);
 
   default:
     //Serial.println("MINER_CLIENT: Unknown State");
@@ -241,8 +260,23 @@ void MinerClient::loop() {
 //               ------ PRIVATE -------
 // -----------------------------------------------
 
+void MinerClient::_set_state(DUINO_STATE state) {
+  _state = state;
+  _state_start_ms = (state == DUINO_STATE_NONE) ? 0 : millis();
+}
+
+bool MinerClient::_is_state_stuck() {
+  if (_state == DUINO_STATE_IDLE
+    || _state == DUINO_STATE_NONE)
+  {
+      return false;
+  }
+  
+  return (millis() - _state_start_ms > STATE_STUCK_TIMEOUT) ? true : false;
+}
+
 // ---------------- low-level I/O ----------------
-bool MinerClient::_connectIfNeeded() {
+bool MinerClient::_connectToPool() {
   if (_client.connected()) return true;
 
   // Fall back to pool.cpp discovery if not provided
@@ -254,26 +288,26 @@ bool MinerClient::_connectIfNeeded() {
     _emit_text(ME_ERROR, _last_err.c_str());
     return false;
   }
-
-  // _client.stop();
-  // _client.setTimeout(CLIENT_TIMEOUT_CONNECTION);
   
   _client.clear();
   Serial.println("[Client] Connecting to ... " + _host + ":" + String(_port));
 
+  _last_connect_try = millis();
+  ++_try_count;
   if (!_client.connect(_host.c_str(), _port, CLIENT_TIMEOUT_CONNECTION)) {
     _last_err = F("TCP connect failed");
     _emit_text(ME_ERROR, _last_err.c_str());
     return false;
   }
 
+  _last_connect_try = 0;        // Reset, as we at least got a TCP connection
+  _try_count = 0;
+
   // DON'T send connected event here as it will be too early. Wait for
   // the version reply
   // Immediately after connection the server should return with a pool version string
-  _state = DUINO_STATE_VERSION_WAIT; // or MOTD directly if you wish
-  _state_start = millis();
-  _clientsConnectTime = millis();
-
+  _set_state(DUINO_STATE_VERSION_WAIT); // or MOTD directly if you wish
+  _poolConnectTime = millis();
   return true;
 }
 
@@ -350,7 +384,7 @@ bool MinerClient::_solveAndSubmit(const String& seed40, const String& target40, 
 
   String submit = String(found_nonce)
                 + SEP_TOKEN + String(found_nonce / (elapsed_time * 0.000001f))
-                + SEP_TOKEN + APP_NAME
+                + SEP_TOKEN + APP_NAME + " " + APP_VERSION
                 + SEP_TOKEN + _miner_name
                 + SEP_TOKEN + /*String("ESP32MST")*/ String("DUCOID") + this->get_chip_id()
                 //+ SEP_TOKEN + String("2785")

@@ -10,16 +10,12 @@
 #include <Arduino.h>
 
 #define REPORT_INTERVAL 60000
-#define CHECK_MINING_KEY false
 #define REPEATED_WIRE_SEND_COUNT 1      // 1 for AVR, 8 for RP2040
 
 #define BLINK_SHARE_FOUND    1
 #define BLINK_SETUP_COMPLETE 2
 #define BLINK_CLIENT_CONNECT 3
 #define BLINK_RESET_DEVICE   5
-
-#define MINER "AVR I2C v4.3"
-#define JOB "AVR"
 
 #define LED_RED     25
 #define LED_BLUE    26
@@ -67,7 +63,6 @@ void miner_event_sink(MinerEvent ev, const MinerEventData& d, void* user) {
       break;
     case ME_MOTD:
       SERIALPRINT_F("[DUCO] MOTD: %s\n", d.text);
-      masterMiner->start_mining();
       break;
     case ME_JOB_REQUESTED:
       SERIALPRINT_LN("[DUCO] Job requested from pool...");
@@ -79,13 +74,14 @@ void miner_event_sink(MinerEvent ev, const MinerEventData& d, void* user) {
       break;
     case ME_SOLVED:
       SERIALPRINT_F("[DUCO] Solved: nonce=%lu, HR=%.2f kH/s\n", (unsigned long)d.nonce, d.hashrate_khs);
-      blink(2, LED_GREEN);
+      blink(2, LED_YELLOW);
       break;
     case ME_SOLVE_FAILED:
       SERIALPRINT_LN("[DUCO] Failed to solve hash.\n");
       break;
     case ME_RESULT_GOOD:
       SERIALPRINT_LN("[DUCO] Share accepted");
+      blink(2, LED_GREEN);
       break;
     case ME_RESULT_BAD:
       SERIALPRINT_F("[DUCO] Share rejected: %s\n", d.text ? d.text : "");
@@ -116,8 +112,6 @@ void setup() {
   while(!Serial) { delay(10); }   // harmless on ESP32; guarantees attach
 
   SERIALPRINT("\nDuino-Coin Master Setup: ");
-  SERIALPRINT_LN(MINER); 
-
   SERIALPRINT_LN("Flash: " + String(ESP.getFlashChipSize()) + " bytes.");
 
   wirewrap_setup();
@@ -141,6 +135,7 @@ void setup() {
   
   masterMiner = new MinerClient(DUCO_USER, "ESP32MasterMiner");
   masterMiner->setMasterMiner(true);    // Setup this one as a miner on this device
+  masterMiner->setMining(true);
   // register callback
   masterMiner->onEvent(miner_event_sink, nullptr);
 

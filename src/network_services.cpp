@@ -25,7 +25,7 @@ void wifi_setup() {
   Serial.println("\nConnected to WiFi!");
   Serial.println("Local IP address: " + WiFi.localIP().toString());
 
-    mdns_setup();
+  mdns_setup();
 }
 
 void mdns_setup() {
