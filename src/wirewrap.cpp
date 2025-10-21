@@ -146,3 +146,27 @@ boolean wire_run_every_micro(unsigned long interval)
   }
   return false;
 }
+
+void wire_scan() {
+  Serial.println("Scanning...");
+  uint8_t address = 1;
+  for (address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    uint8_t error = Wire.endTransmission();
+
+    // If endTransmission() returns 0, the device acknowledged the address
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address < 16) {
+        Serial.print("0"); // Pad with a leading zero for single-digit hex
+      }
+      Serial.print(address, HEX);
+      Serial.println(" !");
+    } else if (error == 4) {
+      // Error 4 means "unknown error" but can sometimes indicate a disconnected device
+      Serial.print("Unknown error at address 0x");
+      Serial.print(address, HEX);
+      Serial.println();
+    }
+  }
+}

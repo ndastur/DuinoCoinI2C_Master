@@ -17,9 +17,18 @@ void wifi_setup() {
   else
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
+  int connectTime = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    if(connectTime++ > 30) {
+    #if defined(WIFI_SSID2) && defined(WIFI_PASS2)
+      WiFi.begin(WIFI_SSID2, WIFI_PASS2);
+    #else
+      SERIALPRINT_LN("Connection to WiFi failed.");
+      return; // TODO consider halting
+    #endif
+    }
   }
 
   Serial.println("\nConnected to WiFi!");
@@ -63,7 +72,7 @@ void ota_setup() {
   // Just support ESP32 for now
   // if you need ESP8266 support, please add it yourself, it's so old now :)
   char hostname[32];
-  sprintf(hostname, "MinerESP32-Async-%06lx", ESP.getEfuseMac());
+  sprintf(hostname, "MinerESP32-Async-%06llx", ESP.getEfuseMac());
   ArduinoOTA.setHostname(hostname);
 
   ArduinoOTA.begin();

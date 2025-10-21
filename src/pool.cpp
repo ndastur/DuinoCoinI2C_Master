@@ -1,30 +1,157 @@
+#include "config.h"
+#include "pool.h"
+#include "network_services.h"
+#include "utils.h"
+
+#include <Arduino.h>
+#include <WiFiClient.h>
 #include <ArduinoJson.h>
 
-#include "config.h"
-#include "network_services.h"
-#include "web.h"
-#include "pool.h"
+#define CLIENT_TIMEOUT_CONNECTION 30000
+#define CLIENT_TIMEOUT_RW         5000UL
+#define STATE_STUCK_TIMEOUT       30000UL
+
+#define END_TOKEN  '\n'
+#define SEP_TOKEN  ','
+
+#define AVR_WORKER_JOB "AVR"
+#define ESP_WORKER_JOB "ESP32S"
+
+#define BAD "BAD"
+#define GOOD "GOOD"
+#define BLOCK "BLOCK"
 
 const char * urlPool = "https://server.duinocoin.com/getPool";
 const char * urlMiningKeyStatus = "https://server.duinocoin.com/mining_key";
 
-String _host = "162.55.103.174";
-int _port = 6000;
-String _mining_key = "None";
-
-static bool connected = false;
-static uint32_t lastAttempt = 0;
-
-static void _check_mining_key(String response);
-
-void pool_setup() {
-  pool_update();
+Pool::Pool(String username, String miningKey, DeviceType type, String workerId) {
+  _username = username;
+  _miningKey = miningKey;
+  _type = type;
+  setWorkerId(workerId);
+  SERIALPRINT_LN("[POOL] ctor");
 }
 
-void pool_update() {
+void Pool::onEvent(PoolEventCallback cb) {
+  _cb = cb;
+}
+
+bool Pool::isConnected() {
+  return _client.connected() && _poolConnectTime > 0;
+}
+
+void Pool::setUsername(String un) {
+  _username = un;
+}
+
+void Pool::setMinerName(String minerName) {
+  _minerName = minerName.isEmpty() ? "None" : minerName;
+}
+
+void Pool::setWorkerId(String workerId) {
+  _workerId = workerId.isEmpty() || workerId == "Auto" ? String("DUCOID") + String(getChipId()) : workerId;
+  SERIALPRINT_LN("[POOL] setting worker id; " + _workerId);
+}
+
+void Pool::setMiningKey(String newMiningKey) {
+    _miningKey = newMiningKey;
+    SERIALPRINT_LN("[POOL] Setting mining_key: " + _miningKey);
+}
+
+/// ******* SETUP POOL ********
+void Pool::setup() {     // connect/register with DuinoCoin pool(s)
+  update();
+}
+
+/// ******* MAIN LOOP ********
+void Pool::loop() {
+
+  // Re-start things if we've got stuck in a state for a long time
+  if(_isStateStuck()) {
+    // This might not be because of a disconnect, handle better
+    _poolConnectTime = 0;
+    _host = "";
+    _port = 0;    // clear the pool, start again
+    if (_client.connected()) {
+      _client.stop();
+    }
+    _setState(POOL_STATE_CONNECT);
+  }
+
+  /// State engine
+  switch (_state)
+  {
+  case POOL_STATE_CONNECT:
+    if(shouldTryConnect(_lastConnectTry, _tryCount)) {
+      connect();
+    }
+    break;
+  
+  case POOL_STATE_VERSION_WAIT:
+    if(_client.available()) {
+      _poolVersion = _client.readStringUntil(END_TOKEN);
+      _poolConnectTime = millis();
+
+      _setState(POOL_STATE_IDLE);
+
+      // Only send the connected event once we have a server reply with the version
+      char buf[128];
+      snprintf(buf, sizeof(buf), "%s [%s:%d] Ver: %s",
+        _name.c_str(),
+        _host.c_str(),
+        _port,
+        _poolVersion.c_str());
+      _emit_text(POOLEVT_CONNECTED, buf);
+    }
+
+  case POOL_STATE_MOTD_WAIT:
+    if(_client.available()) {
+      _MOTD = _client.readString();
+      _setState(POOL_STATE_IDLE);
+      _emit_text(POOLEVT_MOTD, _MOTD.c_str());
+    }
+    break;
+
+  case POOL_STATE_JOB_WAIT:
+    if(_client.available()) {
+    String seed, target; uint16_t diff = 0;
+    if (_recvJobTriplet(seed, target, diff)) {
+      PoolEventData ed;
+      if(_type == DEVICE_AVR) {    // AVR job based on the worker code
+        jobAVR.difficulty = diff;
+        jobAVR.expectedHash = target;
+        jobAVR.prevHash = seed;
+        ed.jobDataPtr = &jobAVR;
+      }
+      else {    // ESP job
+        jobESP.difficulty = diff;
+        jobESP.expectedHash = target;
+        jobESP.prevHash = seed;
+        ed.jobDataPtr = &jobESP;
+      }
+      _setState(POOL_STATE_IDLE);
+      _emit(POOLEVT_JOB_RECEIVED, ed);
+    }
+    else if (millis() - _stateStartMS > 5000UL) {
+      _last_err = F("JOB recv timeout");
+      _emit_text(POOLEVT_ERROR, _last_err.c_str());
+    }
+  }
+    break;
+
+  case POOL_STATE_SUBMITTED:
+    _handleSubmitJobResponse();
+    _setState(POOL_STATE_IDLE);     // our work is done
+    break;
+  default:
+    break;
+  }
+}
+
+bool Pool::update() {
   String input = http_get_string(urlPool);
   if (input == "")
-    return;
+    return false;
   DynamicJsonDocument doc(256);
   deserializeJson(doc, input); 
 
@@ -32,78 +159,277 @@ void pool_update() {
   const char* ip = doc["ip"];
   int port = doc["port"];
 
-  Serial.println("[Pool]: " + String(name) + " (" + String(ip) + ":" + String(port) + ")");
+  SERIALPRINT_LN("[POOL]: " + String(name) + " (" + String(ip) + ":" + String(port) + ")");
+  _name = String(name);
   _host = String(ip);
   _port = port;
+
+  return (_host.length() > 8 && _port > 1024);
 }
 
-void pool_loop() {
-  // connection management & miner protocol
-  if (!connected && millis() - lastAttempt > 3000) {
-    lastAttempt = millis();
-    // try connect...
-    // connected = try_connect_to_pool();
+bool Pool::connect() {
+  if (_client.connected()) return true;
+
+  if (_host.isEmpty() || _port <= 0) {
+    if(!update()) return false;
+  }
+  
+  _client.stop();
+
+  Serial.println("[POOL] Connecting to ... " + _host + ":" + String(_port));
+  _lastConnectTry = millis();
+  ++_tryCount;
+  if (!_client.connect(_host.c_str(), _port, CLIENT_TIMEOUT_CONNECTION)) {
+    _last_err = F("TCP connect failed");
+    _host = "";
+    _port = 0;
+    _emit_text(POOLEVT_ERROR, _last_err.c_str());
+    return false;
+  }
+
+  _lastConnectTry = 0;        // Reset, as we at least got a TCP connection
+  _tryCount = 0;
+
+  // DON'T send connected event here as it will be too early. Wait for
+  // the version reply
+  // Immediately after connection the server should return with a pool version string
+  _setState(POOL_STATE_VERSION_WAIT); // or MOTD directly if you wish
+  return true;
+}
+
+bool Pool::disconnect() {
+  _client.stop();
+  return true;
+}
+
+bool Pool::requestMOTD() {
+  if(_state != POOL_STATE_IDLE) {
+    Serial.println("[POOL] request MOTD State not idle ...");
+    return false;
+  }
+  if(!connect()) return false;
+
+  _client.println("MOTD");
+  _setState(POOL_STATE_MOTD_WAIT);
+  return true;
+}
+
+// Request a job
+// Example from wireshark JOB,[username],AVR,[mining_key]
+// From ESPCode
+// JOB,[username],start_diff,miner_key,[Temp: |CPU Temp: ]Value*C
+bool Pool::requestJob() {
+  if(_state != POOL_STATE_IDLE) {
+    Serial.println("request job State not idle ...");
+    return false;
+  }
+  if(!connect()) return false;
+
+  String startingDiff;
+  switch (_type)
+  {
+  case DEVICE_AVR:
+    startingDiff = AVR_WORKER_JOB;
+    jobAVR.difficulty = 0;
+    break;
+  case DEVICE_ESP32:
+    startingDiff = ESP_WORKER_JOB;
+    jobESP.difficulty = 0;
+    break;
+  default:
+    SERIALPRINT_LN("[POOL] requestJob() no device type specified");
+    return false;
+    break;
+  }
+
+  // JOB,<username>,<platform>,<rig_id>
+  String line = String("JOB")
+    + SEP_TOKEN + _username
+    + SEP_TOKEN + startingDiff
+    + SEP_TOKEN + MINING_KEY;
+  
+  Serial.println(line);  
+  bool ret = _sendLine(line);
+
+  if(ret) {
+    _setState(POOL_STATE_JOB_WAIT);
+  }
+
+  return ret;
+}
+
+Job* Pool::getJob() {
+  switch (_type)
+  {
+  case DEVICE_AVR:
+    return jobAVR.difficulty == 0 ? nullptr : &jobAVR;
+    break;
+  case DEVICE_ESP32:
+    return jobESP.difficulty == 0 ? nullptr : &jobESP;
+    break;
+  default:
+    SERIALPRINT_LN("[POOL] getJob() no device type specified");
+    break;
+  }
+
+  return nullptr;
+}
+
+bool Pool::submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS) {
+  String submit = String(foundNonce)
+                + SEP_TOKEN + String(foundNonce / (elapsedTimeUS * 0.000001f))
+                + SEP_TOKEN + APP_NAME + " " + APP_VERSION
+                + SEP_TOKEN + _minerName
+                + SEP_TOKEN +  String("DUCOID") + String(getChipId())
+                //+ SEP_TOKEN + String("2785")
+                //+ SEP_TOKEN + String(WALLET_GRP_ID) // Might need the wallet ID for grouping String(random(0, 2811)); // Needed for miner grouping in the wallet in the official
+                //+ END_TOKEN
+                ;
+
+  SERIALPRINT("[POOL] Submit: ");
+  SERIALPRINT_LN(submit);
+
+  bool ret = _sendLine(submit);
+  if(ret) {
+    _setState(POOL_STATE_SUBMITTED);
+    return false;
+  }
+  else {
+    // TODO handle this error better
+    return false;
   }
 }
 
-bool pool_connected() { return connected; }
+// -----------------------------------------------
+//               ------ PRIVATE -------
+// -----------------------------------------------
 
-String get_pool_host() {
-  return _host;
+void Pool::_setState(DUINO_POOL_STATE state) {
+  _state = state;
+  _stateStartMS = (state == POOL_STATE_NONE) ? 0 : millis();
 }
 
-int get_pool_port() {
-  return _port;
+bool Pool::_isStateStuck() {
+  if (_state == POOL_STATE_IDLE
+    || _state == POOL_STATE_NONE)
+  {
+      return false;
+  }
+  
+  return (millis() - _stateStartMS > STATE_STUCK_TIMEOUT) ? true : false;
 }
 
-String get_mining_key() {
-  return _mining_key;
+bool Pool::_sendLine(const String& s) {
+  if (!_client.connected()) return false;
+  size_t n = _client.print(s + END_TOKEN);
+  return n == (s.length() + 1);
 }
 
-void set_mining_key(String new_mining_key) {
-    _mining_key = new_mining_key;
-    Serial.println("[ ] Using mining_key: " + _mining_key);
+bool Pool::_readLine(String& out, uint32_t timeout_ms) {
+  out = "";
+  uint32_t start = millis();
+  while (millis() - start < timeout_ms) {
+    while (_client.available()) {
+      int c = _client.read();
+      if (c < 0) break;
+      if (c == '\r') continue;
+      if (c == END_TOKEN) return true;
+      out += char(c);
+    }
+    delay(0);
+  }
+  // Tolerate partial line
+  return !out.isEmpty();
 }
 
-void update_mining_key(String new_mining_key, String ducouser) {
+bool Pool::_splitTripletCSV(const String& s, String& a, String& b, String& c) {
+  int p1 = s.indexOf(SEP_TOKEN);
+  if (p1 < 0) return false;
+  int p2 = s.indexOf(SEP_TOKEN, p1 + 1);
+  if (p2 < 0) return false;
+  a = s.substring(0, p1);
+  b = s.substring(p1 + 1, p2);
+  c = s.substring(p2 + 1);
+  a.trim(); b.trim(); c.trim();
+  return (a.length() == 40 && b.length() == 40 && c.length() > 0);
+}
+
+bool Pool::_recvJobTriplet(String& seed40, String& target40, uint16_t& diff) {
+  String acc;
+  const uint32_t start = millis();
+  while (millis() - start < 5000UL) {
+    String line;
+    _readLine(line, CLIENT_TIMEOUT_RW);
+    if (line.length() == 0) { delay(0); continue; }
+    if (!acc.isEmpty()) acc += SEP_TOKEN;
+    acc += line;
+
+    String a, b, c;
+    if (_splitTripletCSV(acc, a, b, c)) {
+      seed40 = a; target40 = b; diff = (uint16_t)c.toInt();
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Pool::_handleSubmitJobResponse() {
+  String resp;
+  if (!_readLine(resp, CLIENT_TIMEOUT_RW)) return false;
+  resp.trim();
+
+  SERIALPRINT("[POOL] Resp from share submit: ");
+  SERIALPRINT_LN(resp);  
+
+  if (resp.equalsIgnoreCase(GOOD)) {
+    _emit_text(POOLEVT_RESULT_GOOD, resp.c_str());
+    return true;
+  } else if (resp.equalsIgnoreCase(BLOCK)) {
+    _emit_text(POOLEVT_RESULT_BLOCK, resp.c_str());
+    return true;
+  }
+  else{
+    // Treat anything else as BAD
+    PoolEventData d; d.text = resp.c_str();
+    _emit(POOLEVT_RESULT_BAD, d);
+    return false;
+  }
+}
+
+void Pool::_checkMiningKey(String new_mining_key, String ducouser)
+{
     String url = String(urlMiningKeyStatus) + "?u=" + String(ducouser) + "&k=" + new_mining_key;
-    String res = http_get_string(url);
-    if (res == "")
+    String response = http_get_string(url);
+    if (response == "")
       return;
 
-    _check_mining_key(res);
-}
-
-void _check_mining_key(String response) 
-{
-    Serial.println("[ ] CheckMiningKey " + response);
+    Serial.println("[POOL] CheckMiningKey " + response);
     DynamicJsonDocument doc(128);
     deserializeJson(doc, response);
 
-    //input::{"has_key":false,"success":true}
     bool has_key = doc["has_key"];
     bool success = doc["success"];
 
-    Serial.println("[ ] mining_key has_key: " + String(has_key) + "  success: " + String(success));
+    Serial.println("[POOL] mining_key has_key: " + String(has_key) + "  success: " + String(success));
 
     if (success && !has_key) {
-        Serial.println("[ ] Wallet does not have a mining key. Proceed..");
-        set_mining_key("None");
+        Serial.println("[POOL] Wallet does not have a mining key. Proceed..");
+        setMiningKey("None");
     }
     else if (!success) {
-        if (_mining_key == "None") {
-            Serial.println("[ ] Update mining_key to proceed. Halt..");
-            ws_send_all("Update mining_key to proceed. Halt..");
+        if (_miningKey == "None") {
+            Serial.println("[POOL] Update mining_key to proceed. Halt..");
+            //ws_send_all("Update mining_key to proceed. Halt..");
             for(;;);
         }
         else {
-            Serial.println("[ ] Invalid mining_key. Halt..");
-            ws_send_all("Invalid mining_key. Halt..");
+            Serial.println("[POOL] Invalid mining_key. Halt..");
+            //ws_send_all("Invalid mining_key. Halt..");
             for(;;);
         }
     }
     else {
-        Serial.println("[ ] Updated mining_key..");
-        set_mining_key(_mining_key);
+        Serial.println("[POOL] Updated mining_key..");
+        setMiningKey(_miningKey);
     }
 }

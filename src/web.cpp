@@ -25,14 +25,19 @@ static void register_routes() {
   });
 
   // If using WS/SSE, register handlers here
-  // server.addHandler(&ws);
+  server.addHandler(&ws);
 }
 
 void web_setup() {
-  if (!LittleFS.begin()) {
-    Serial.println("[FS] LittleFS mount failed");
-    return;
+  if (!LittleFS.begin(false, "/littlefs", 10, "littlefs")) {
+    Serial.println("[FS] LittleFS mount failed, formatting...");
+    LittleFS.begin(true, "/littlefs", 10, "littlefs");  // one-time rescue format
   }
+
+  // if (!LittleFS.begin()) {
+  //   Serial.println("[FS] LittleFS mount failed");
+  //   return;
+  // }
   register_routes();
   server.begin();
   Serial.println("[WEB] Server started");

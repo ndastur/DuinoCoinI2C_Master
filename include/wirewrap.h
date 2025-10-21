@@ -23,4 +23,6 @@ String wire_readline(int address);
 boolean wire_run_every(unsigned long interval);
 boolean wire_run_every_micro(unsigned long interval);
 
+void wire_scan();
+
 #endif // WIREWRAP_H

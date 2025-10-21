@@ -192,3 +192,4 @@ sdkconfig.old
 .vscode/launch.json
 .pio-core
 .vscode
+*.code-workspace

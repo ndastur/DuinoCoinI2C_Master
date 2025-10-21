@@ -37,4 +37,30 @@ class RunEvery {
     unsigned long _previousMillis;
 };
 
+/*
+  Usage:
+  RunEvery blink(500); // ~500 ms
+
+  void loop() {
+    if (blink.due()) {
+      // toggle LED
+      }
+  }
+*/
+struct RunEveryStruct {
+  unsigned long last = 0;   // 4 bytes
+  unsigned long interval;   // 4 bytes
+
+  explicit RunEveryStruct(unsigned long ms) : interval(ms) {}
+
+  inline bool due() {
+    unsigned long now = millis();
+    if (now - last >= interval) {
+      last = now;
+      return true;
+    }
+    return false;
+  }
+};
+
 #endif // RUNEVERY_H
