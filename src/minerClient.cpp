@@ -17,6 +17,9 @@
 MinerClient::MinerClient(const String username, DeviceType deviceType)
   : _username(username) {
     _pool = new Pool(username, MINING_KEY, deviceType);
+    if(deviceType == DEVICE_ESP32) {
+      _isMasterMiner = true;          // has to be a master
+    }
     init();
   }
 
@@ -69,7 +72,7 @@ void MinerClient::loop() {
   }
 
   _pool->loop();
-  
+
   switch (_state) {
     case DUINO_STATE_IDLE:
       if(_isMining && _pool->isConnected()) {
@@ -101,15 +104,16 @@ void MinerClient::loop() {
       if(!_isMining)
         return;
 
-      // // Solve + submit, then immediately wait for the text result
-      // _setState(DUINO_STATE_JOB_DONE_SEND);
-
-      if (this->_solveAndSubmit(_seed, _target, _diff * 100 + 1)) {
-        _setState(DUINO_STATE_SHARE_SUBMITTED);
-      } else {
-        _setState(DUINO_STATE_JOB_REQUEST);  // start again
+      if(_isMasterMiner) {
+        if (this->_solveAndSubmit(_seed, _target, _diff * 100 + 1)) {
+          _setState(DUINO_STATE_SHARE_SUBMITTED);
+        } else {
+          _setState(DUINO_STATE_JOB_REQUEST);  // start again
+        }
       }
-
+      else {
+        // Need to send to worker slave device
+      }
       break;
 
     case DUINO_STATE_SHARE_SUBMITTED:    
@@ -118,7 +122,7 @@ void MinerClient::loop() {
       break;
 
     default:
-      SERIALPRINT_LN("[MINER_CLIENT] Unknown State");
+      DEBUGPRINT_LN("[MINER_CLIENT] Unknown State");
       break;
     }
 }
@@ -179,10 +183,8 @@ bool MinerClient::_solveAndSubmit(const String& seed40, const String& target40, 
   uint32_t found_nonce = 0;
   uint32_t elapsed_time = 0;
 
-  #if defined(SERIAL_PRINT)
-    Serial.print("Solving: ");
-    Serial.println(seed40 + " " + target40 + " " + String(diff));
-  #endif
+  DEBUGPRINT("Solving: ");
+  DEBUGPRINT_LN(seed40 + " " + target40 + " " + String(diff));
 
   if( this->findNonce(seed40, target40, diff, found_nonce, elapsed_time) ) {
     float elapsed_time_s = elapsed_time * .000001f;

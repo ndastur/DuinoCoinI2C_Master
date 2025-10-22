@@ -27,8 +27,8 @@ void restart_esp(String msg);
 void poolEventSink(PoolEvent ev, const PoolEventData& d);
 
 void restart_esp(String msg) {
-  SERIALPRINT_LN(msg);
-  SERIALPRINT_LN("Resetting ESP...");
+  DEBUGPRINT_LN(msg);
+  DEBUGPRINT_LN("Resetting ESP...");
   #ifndef ESP01
     blink(BLINK_RESET_DEVICE);
   #endif
@@ -41,31 +41,31 @@ void poolEventSink(PoolEvent ev, const PoolEventData& d) {
   switch (ev)
   {
   case POOLEVT_CONNECTED:
-    SERIALPRINT_LN("[MAIN] POOLEVT_CONNECTED");
-    SERIALPRINT_LN(d.text);
+    DEBUGPRINT_LN("[MAIN] POOLEVT_CONNECTED");
+    DEBUGPRINT_LN(d.text);
     break;
   case POOLEVT_DISCONNECTED:     // payload: text = reason
-    SERIALPRINT_LN("[MAIN] POOLEVT_DISCONNECTED");
+    DEBUGPRINT_LN("[MAIN] POOLEVT_DISCONNECTED");
     break;
   case POOLEVT_MOTD:             // payload: text = motd
-    SERIALPRINT_LN("[MAIN] POOLEVT_MOTD");
-    SERIALPRINT_LN(d.text);
+    DEBUGPRINT_LN("[MAIN] POOLEVT_MOTD");
+    DEBUGPRINT_LN(d.text);
     break;
   case POOLEVT_JOB_REQUESTED:
-    SERIALPRINT_LN("[MAIN] POOLEVT_REQUESTED");
+    DEBUGPRINT_LN("[MAIN] POOLEVT_REQUESTED");
     break;
   case POOLEVT_JOB_RECEIVED:     // payload: seed40 / target40 / diff
-    SERIALPRINT_LN("[MAIN] POOLEVT_JOB_RECEIVED");
-    SERIALPRINT("  prevHash: ");
-    SERIALPRINT_LN(d.jobDataPtr->prevHash);
-    SERIALPRINT("  exptHash: ");
-    SERIALPRINT_LN(d.jobDataPtr->expectedHash);
-    SERIALPRINT("      Diff: ");
-    SERIALPRINT_LN(d.jobDataPtr->difficulty);
+    DEBUGPRINT_LN("[MAIN] POOLEVT_JOB_RECEIVED");
+    DEBUGPRINT("  prevHash: ");
+    DEBUGPRINT_LN(d.jobDataPtr->prevHash);
+    DEBUGPRINT("  exptHash: ");
+    DEBUGPRINT_LN(d.jobDataPtr->expectedHash);
+    DEBUGPRINT("      Diff: ");
+    DEBUGPRINT_LN(d.jobDataPtr->difficulty);
     break;
   case POOLEVT_ERROR:
-    SERIALPRINT("[MAIN] POOLEVT_ERROR: ");
-    SERIALPRINT_LN(d.text);
+    DEBUGPRINT("[MAIN] POOLEVT_ERROR: ");
+    DEBUGPRINT_LN(d.text);
     break;
 
   default:
@@ -78,26 +78,32 @@ void poolEventSink(PoolEvent ev, const PoolEventData& d) {
 void minerEventSink(MinerEvent ev, const MinerEventData& d) {
   switch (ev) {
     case ME_SOLVED:
-      SERIALPRINT_F("[DUCO] Solved: nonce=%lu, HR=%.2f kH/s\n", (unsigned long)d.nonce, d.hashrate_khs);
+      DEBUGPRINT("[DUCO] Solved: nonce=%lu, HR=%.2f kH/s\n");
+      DEBUGPRINT((unsigned long)d.nonce);
+      DEBUGPRINT(", HR=");
+      DEBUGPRINT(d.hashrate_khs);
+      DEBUGPRINT(" kH/s\n");
       blinkStatus(BLINK_SHARE_SOLVED);
       break;
     case ME_SOLVE_FAILED:
-      SERIALPRINT_LN("[DUCO] Failed to solve hash.\n");
+      DEBUGPRINT_LN("[DUCO] Failed to solve hash.\n");
       break;
     case ME_RESULT_GOOD:
-      SERIALPRINT_LN("[DUCO] Share accepted");
+      DEBUGPRINT_LN("[DUCO] Share accepted");
       blinkStatus(BLINK_SHARE_GOOD);
       break;
     case ME_RESULT_BAD:
-      SERIALPRINT_F("[DUCO] Share rejected: %s\n", d.text ? d.text : "");
+      DEBUGPRINT("[DUCO] Share rejected: ");
+      DEBUGPRINT_LN(d.text ? d.text : "");
       blinkStatus(BLINK_SHARE_ERROR);
       break;
     case ME_RESULT_BLOCK:
-      SERIALPRINT_LN("[DUCO] Found a BLOCK ... Whoa!");
+      DEBUGPRINT_LN("[DUCO] Found a BLOCK ... Whoa!");
       blinkStatus(BLINK_SHARE_BLOCKFOUND);
       break;
     case ME_ERROR:
-      SERIALPRINT_F("[DUCO] Error: %s\n", d.text ? d.text : "");
+      DEBUGPRINT("[DUCO] Error: ");
+      DEBUGPRINT_LN(d.text ? d.text : "");
       break;
     default:
       break;
@@ -114,8 +120,8 @@ void setup() {
   Serial.begin(115200);
   while(!Serial) { delay(10); }   // harmless on ESP32; guarantees attach
 
-  SERIALPRINT("\nDuino-Coin Master Setup: ");
-  SERIALPRINT_LN("Flash: " + String(ESP.getFlashChipSize()) + " bytes.");
+  DEBUGPRINT("\nDuino-Coin Master Setup: ");
+  DEBUGPRINT_LN("Flash: " + String(ESP.getFlashChipSize()) + " bytes.");
   
   ledInit();
 
@@ -153,7 +159,7 @@ void setup() {
   //   uint8_t eh[20] = {0xe6,0xa9,0x7a,0x92,0x27,0xad,0x70,0x21,0x9a,0x95,0x32,0x3a,0x82,0x2a,0x70,0x74,0xd8,0x13,0x24,0x8b};
 
   //   if(!I2C.sendJobData(0x30, lastHashStr, eh, 10)) {
-  //     SERIALPRINT_LN("Sending job failed :(");
+  //     DEBUGPRINT_LN("Sending job failed :(");
   //   }
   // }
   // job_state = 3;
@@ -197,9 +203,9 @@ void loop() {
       //   #if defined(TEST_FUNCS)
       //     if(testSendBytes > 0) {
       //       if (!I2C.testSend(addr, testSendBytes++)) {
-      //         SERIALPRINT("Test send of ");
-      //         SERIALPRINT(testSendBytes);
-      //         SERIALPRINT_LN(" bytes FAILED");
+      //         DEBUGPRINT("Test send of ");
+      //         DEBUGPRINT(testSendBytes);
+      //         DEBUGPRINT_LN(" bytes FAILED");
       //       }
       //     if(testSendBytes > 15) testSendBytes = 4;
       //     }
@@ -209,28 +215,28 @@ void loop() {
       switch (job_state)
       {
       case 0:
-        SERIALPRINT_LN(F("LOOP JOB STATE:: not running."));
+        DEBUGPRINT_LN(F("LOOP JOB STATE:: not running."));
         break;
 
       case 1:
-        SERIALPRINT_LN(F("LOOP JOB STATE:: new job request"));
+        DEBUGPRINT_LN(F("LOOP JOB STATE:: new job request"));
         if(!I2C.getSlaveIsIdle(addr)) break;
 
         if(I2C.newJobRequest(addr)) {
           job_state = 2;  // ok to start sending data
         }
         else {
-          SERIALPRINT_LN("Request to start new job failed :(");
+          DEBUGPRINT_LN("Request to start new job failed :(");
         }
         break;
 
       case 2: {
-        SERIALPRINT_LN(F("LOOP JOB STATE:: sending data"));
+        DEBUGPRINT_LN(F("LOOP JOB STATE:: sending data"));
         uint8_t lastHashStr[] = "bf55bad9a75c5b375a1457b0a252d75d60abce13";
         uint8_t eh[20] = {0xe6,0xa9,0x7a,0x92,0x27,0xad,0x70,0x21,0x9a,0x95,0x32,0x3a,0x82,0x2a,0x70,0x74,0xd8,0x13,0x24,0x8b};
 
         if(!I2C.sendJobData(addr, lastHashStr, eh, 10)) {
-          SERIALPRINT_LN("Sending job failed :(");
+          DEBUGPRINT_LN("Sending job failed :(");
         }
         //I2C.testDumpData(addr);
 
@@ -245,11 +251,11 @@ void loop() {
           uint8_t timeTakenMs = 0;
           if(!I2C.getJobStatus(addr, nonce, timeTakenMs)) break;
           else {
-            SERIALPRINT("Job finished and nonce; ");
-            SERIALPRINT(nonce);
-            SERIALPRINT(" found in ");
-            SERIALPRINT(timeTakenMs);
-            SERIALPRINT_LN("ms");
+            DEBUGPRINT("Job finished and nonce; ");
+            DEBUGPRINT(nonce);
+            DEBUGPRINT(" found in ");
+            DEBUGPRINT(timeTakenMs);
+            DEBUGPRINT_LN("ms");
             job_state = 1;          // send the next
           }
         }

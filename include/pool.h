@@ -6,6 +6,7 @@
 #include <Arduino.h>
 
 enum DeviceType : uint8_t {
+  DEVICE_SLAVE,
   DEVICE_AVR,
   DEVICE_ESP32
 };
@@ -78,6 +79,7 @@ class Pool {
     String _workerId = "";
     String _poolVersion;
     String _MOTD;
+    String _startingDifficulty;
 
     WiFiClient _client;   // not wifi but the TCP client to the pool
     unsigned long _poolConnectTime = 0;
@@ -90,8 +92,7 @@ class Pool {
     // uint8_t jobsFifoWrite = 0;
     // Job jobsAVR[5];
     // Job jobsESP[1];
-    Job jobESP;
-    Job jobAVR;
+    Job _poolJob;
 
     // Error
     String _last_err;

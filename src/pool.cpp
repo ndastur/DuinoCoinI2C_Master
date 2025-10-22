@@ -29,7 +29,19 @@ Pool::Pool(String username, String miningKey, DeviceType type, String workerId) 
   _miningKey = miningKey;
   _type = type;
   setWorkerId(workerId);
-  SERIALPRINT_LN("[POOL] ctor");
+
+  switch (type) {
+    case DEVICE_SLAVE:
+    case DEVICE_AVR:
+      _startingDifficulty = AVR_WORKER_JOB;
+      break;
+    case DEVICE_ESP32:
+      _startingDifficulty = ESP_WORKER_JOB;
+      break;
+    default:
+      DEBUGPRINT_LN("[POOL] ctor no device type specified");
+      break;
+  }
 }
 
 void Pool::onEvent(PoolEventCallback cb) {
@@ -50,12 +62,12 @@ void Pool::setMinerName(String minerName) {
 
 void Pool::setWorkerId(String workerId) {
   _workerId = workerId.isEmpty() || workerId == "Auto" ? String("DUCOID") + String(getChipId()) : workerId;
-  SERIALPRINT_LN("[POOL] setting worker id; " + _workerId);
+  DEBUGPRINT_LN("[POOL] setting worker id; " + _workerId);
 }
 
 void Pool::setMiningKey(String newMiningKey) {
     _miningKey = newMiningKey;
-    SERIALPRINT_LN("[POOL] Setting mining_key: " + _miningKey);
+    DEBUGPRINT_LN("[POOL] Setting mining_key: " + _miningKey);
 }
 
 /// ******* SETUP POOL ********
@@ -116,20 +128,14 @@ void Pool::loop() {
     if(_client.available()) {
     String seed, target; uint16_t diff = 0;
     if (_recvJobTriplet(seed, target, diff)) {
-      PoolEventData ed;
-      if(_type == DEVICE_AVR) {    // AVR job based on the worker code
-        jobAVR.difficulty = diff;
-        jobAVR.expectedHash = target;
-        jobAVR.prevHash = seed;
-        ed.jobDataPtr = &jobAVR;
-      }
-      else {    // ESP job
-        jobESP.difficulty = diff;
-        jobESP.expectedHash = target;
-        jobESP.prevHash = seed;
-        ed.jobDataPtr = &jobESP;
-      }
+      _poolJob.difficulty = diff;
+      _poolJob.expectedHash = target;
+      _poolJob.prevHash = seed;
+
       _setState(POOL_STATE_IDLE);
+
+      PoolEventData ed;
+      ed.jobDataPtr = &_poolJob;
       _emit(POOLEVT_JOB_RECEIVED, ed);
     }
     else if (millis() - _stateStartMS > 5000UL) {
@@ -159,7 +165,7 @@ bool Pool::update() {
   const char* ip = doc["ip"];
   int port = doc["port"];
 
-  SERIALPRINT_LN("[POOL]: " + String(name) + " (" + String(ip) + ":" + String(port) + ")");
+  DEBUGPRINT_LN("[POOL]: " + String(name) + " (" + String(ip) + ":" + String(port) + ")");
   _name = String(name);
   _host = String(ip);
   _port = port;
@@ -214,10 +220,7 @@ bool Pool::requestMOTD() {
   return true;
 }
 
-// Request a job
-// Example from wireshark JOB,[username],AVR,[mining_key]
-// From ESPCode
-// JOB,[username],start_diff,miner_key,[Temp: |CPU Temp: ]Value*C
+// Request a job from the Pool
 bool Pool::requestJob() {
   if(_state != POOL_STATE_IDLE) {
     Serial.println("request job State not idle ...");
@@ -225,27 +228,15 @@ bool Pool::requestJob() {
   }
   if(!connect()) return false;
 
-  String startingDiff;
-  switch (_type)
-  {
-  case DEVICE_AVR:
-    startingDiff = AVR_WORKER_JOB;
-    jobAVR.difficulty = 0;
-    break;
-  case DEVICE_ESP32:
-    startingDiff = ESP_WORKER_JOB;
-    jobESP.difficulty = 0;
-    break;
-  default:
-    SERIALPRINT_LN("[POOL] requestJob() no device type specified");
-    return false;
-    break;
-  }
+  _poolJob.difficulty = 0;
 
+  // Example from wireshark JOB,[username],AVR,[mining_key]
+  // From ESPCode
+  // JOB,[username],start_diff,miner_key,[Temp: |CPU Temp: ]Value*C
   // JOB,<username>,<platform>,<rig_id>
   String line = String("JOB")
     + SEP_TOKEN + _username
-    + SEP_TOKEN + startingDiff
+    + SEP_TOKEN + _startingDifficulty
     + SEP_TOKEN + MINING_KEY;
   
   Serial.println(line);  
@@ -254,25 +245,11 @@ bool Pool::requestJob() {
   if(ret) {
     _setState(POOL_STATE_JOB_WAIT);
   }
-
   return ret;
 }
 
 Job* Pool::getJob() {
-  switch (_type)
-  {
-  case DEVICE_AVR:
-    return jobAVR.difficulty == 0 ? nullptr : &jobAVR;
-    break;
-  case DEVICE_ESP32:
-    return jobESP.difficulty == 0 ? nullptr : &jobESP;
-    break;
-  default:
-    SERIALPRINT_LN("[POOL] getJob() no device type specified");
-    break;
-  }
-
-  return nullptr;
+  return _poolJob.difficulty == 0 ? nullptr : &_poolJob;
 }
 
 bool Pool::submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS) {
@@ -286,8 +263,8 @@ bool Pool::submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS) {
                 //+ END_TOKEN
                 ;
 
-  SERIALPRINT("[POOL] Submit: ");
-  SERIALPRINT_LN(submit);
+  DEBUGPRINT("[POOL] Submit: ");
+  DEBUGPRINT_LN(submit);
 
   bool ret = _sendLine(submit);
   if(ret) {
@@ -378,8 +355,8 @@ bool Pool::_handleSubmitJobResponse() {
   if (!_readLine(resp, CLIENT_TIMEOUT_RW)) return false;
   resp.trim();
 
-  SERIALPRINT("[POOL] Resp from share submit: ");
-  SERIALPRINT_LN(resp);  
+  DEBUGPRINT("[POOL] Resp from share submit: ");
+  DEBUGPRINT_LN(resp);  
 
   if (resp.equalsIgnoreCase(GOOD)) {
     _emit_text(POOLEVT_RESULT_GOOD, resp.c_str());

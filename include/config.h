@@ -56,4 +56,14 @@
   #define SERIALPRINT_F(...)
 #endif
 
+#if defined(DEBUG_PRINT)
+  #define DEBUGPRINT(x)         SERIALPRINT(x)
+  #define DEBUGPRINT_LN(x)      SERIALPRINT_LN(x)
+  #define DEBUGPRINT_HEX(x)     SERIALPRINT_HEX(x)
+#else
+  #define DEBUGPRINT(x)
+  #define DEBUGPRINT_LN(x)
+  #define DEBUGPRINT_HEX(x)
+#endif
+
 #endif // CONFIG_H

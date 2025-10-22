@@ -9,7 +9,7 @@
 #include "network_services.h"
 
 void wifi_setup() {
-  Serial.println("Connecting to: " + String(WIFI_SSID));
+  SERIALPRINT_LN("[WIFI] Connecting to: " + String(WIFI_SSID));
   WiFi.mode(WIFI_STA); // Setup ESP in client mode
 
   if (String(WIFI_SSID) == "")
@@ -20,42 +20,45 @@ void wifi_setup() {
   int connectTime = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
-    Serial.print(".");
-    if(connectTime++ > 30) {
+    SERIALPRINT(".");
+    if(connectTime++ > 15) {
     #if defined(WIFI_SSID2) && defined(WIFI_PASS2)
+      SERIALPRINT_LN("[WIFI] Connecting to: " + String(WIFI_SSID2));
+      WiFi.disconnect();
       WiFi.begin(WIFI_SSID2, WIFI_PASS2);
-    #else
-      SERIALPRINT_LN("Connection to WiFi failed.");
-      return; // TODO consider halting
     #endif
+    }
+    if(connectTime > 150) {
+      SERIALPRINT_LN("Connection to WiFi failed.");
+      for(;;);
+      return;
     }
   }
 
-  Serial.println("\nConnected to WiFi!");
-  Serial.println("Local IP address: " + WiFi.localIP().toString());
+  SERIALPRINT_LN("\n[WIFI] Connected to WiFi!");
+  SERIALPRINT_LN("[WIFI] Local IP address: " + WiFi.localIP().toString());
 
   mdns_setup();
 }
 
 void mdns_setup() {
   if (!MDNS.begin(MDNS_RIG_IDENTIFIER)) {
-    Serial.println("mDNS unavailable");
+    SERIALPRINT_LN("mDNS can't be configured without am identifier");
   }
   MDNS.addService("http", "tcp", 80);
-  Serial.println("Configured mDNS for dashboard on http://" 
+  SERIALPRINT_LN("Configured mDNS for dashboard on http://" 
                 + String(MDNS_RIG_IDENTIFIER)
                 + ".local (or http://"
                 + WiFi.localIP().toString()
-                + ")");
-  Serial.println();
+                + ")\n");
 }
 
 void ota_setup() {
   ArduinoOTA.onStart([]() { // Prepare OTA stuff
-    Serial.println("Start");
+    SERIALPRINT_LN("[OTA] Start");
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
+    SERIALPRINT_LN("[OTA] End");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
@@ -93,7 +96,8 @@ String http_get_string(String URL)
     }
     else
     {
-      Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+      SERIALPRINT_LN("[HTTP] GET... failed, error: ");
+      SERIALPRINT_LN(http.errorToString(httpCode).c_str());
     }
     http.end();
   }

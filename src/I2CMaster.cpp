@@ -55,7 +55,7 @@ void I2CMaster::scan(bool printToSerial) {
     _slaveCount = 0;
     memset(_slaves, 0, sizeof(_slaves));
 
-    Serial.println("I2C scan:");
+    if(printToSerial) SERIALPRINT_LN("I2C scan:");
     bool found = false;
     for (uint8_t addr = 1; addr < 127; ++addr) {
         if (probe(addr)) {
@@ -63,12 +63,12 @@ void I2CMaster::scan(bool printToSerial) {
             if(printToSerial) {
                 char strBuf[80];
                 snprintf(strBuf, sizeof(strBuf), "  -> Device at 0x%02X (%d)", addr, addr);
-                SERIALPRINT_LN(strBuf);
+                DEBUGPRINT_LN(strBuf);
             }
             found = true;
         }
     }
-    if (!found) Serial.println("  No devices found.");
+    if (!found) DEBUGPRINT_LN("  No devices found.");
 }
 
 bool I2CMaster::ping(uint8_t address, uint8_t expectedResponse) {
@@ -153,7 +153,7 @@ bool I2CMaster::queryChipId(uint8_t address, uint8_t sig[3]) {
 #if defined(TEST_FUNCS)
 bool I2CMaster::testSend(uint8_t address, uint8_t bytesToSend) {
     if(bytesToSend > 64) {
-        SERIALPRINT_LN("Way too many bytes even for a test ... ");
+        DEBUGPRINT_LN("Way too many bytes even for a test ... ");
         return false;
     }
 
@@ -170,7 +170,7 @@ bool I2CMaster::testSend(uint8_t address, uint8_t bytesToSend) {
             uint8_t count = Wire.read();
             uint8_t checksum = Wire.read();
             uint8_t crc = Wire.read();
-            SERIALPRINT_LN("SEND TEST RTN: " + String(status, HEX)
+            DEBUGPRINT_LN("SEND TEST RTN: " + String(status, HEX)
                 + "\n  - Count:  " + String(count)
                 + "\n  - ChkSum: " + String(checksum)
                 + "\n  - crc8:   " + String(crc)
@@ -199,14 +199,14 @@ bool I2CMaster::newJobRequest(uint8_t address) {
 
     char str[64];
     sprintf(str, "Return status from device addr: 0x%.2X = 0x%.2X",address, data[0]);
-    SERIALPRINT_LN( str );
+    DEBUGPRINT_LN( str );
 
     return (data[0] == 0xAA);
 }
 
 bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len, const uint8_t startSeq) {
     // TODO add timeout
-    SERIALPRINT_LN( "[I2C] sendData(...)" );
+    DEBUGPRINT_LN( "[I2C] sendData(...)" );
 
     uint8_t i = 0;
     uint8_t dataBuf[2];
@@ -227,7 +227,7 @@ bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len
 
         uint8_t respBuf[3];
         if(!_getResponse(address, 3, respBuf)) {
-            SERIALPRINT_LN(respBuf[1]);
+            DEBUGPRINT_LN(respBuf[1]);
             if(sendRespRetry++ < 3) {
                 continue;       // try again
             }
@@ -242,8 +242,8 @@ bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len
             continue;
         }
         else {
-            SERIALPRINT("   Error response from send data: ");
-            SERIALPRINT_LN(respBuf[0]);
+            DEBUGPRINT("   Error response from send data: ");
+            DEBUGPRINT_LN(respBuf[0]);
             if(loopRetry++ < 3) {
                 continue;
             }
@@ -281,9 +281,9 @@ bool I2CMaster::sendJobData(uint8_t address, const uint8_t *previousHashStr,
         return true;
     }
     else {
-        SERIALPRINT("[I2C] sendJob CMD_END_DATA error: 0x");
-        SERIALPRINT_HEX(resp[0]);
-        SERIALPRINT_LN();
+        DEBUGPRINT("[I2C] sendJob CMD_END_DATA error: 0x");
+        DEBUGPRINT_HEX(resp[0]);
+        DEBUGPRINT_LN();
         return false;
     }
     return true;
@@ -321,19 +321,19 @@ bool I2CMaster::_sendCmd(uint8_t address, const uint8_t cmd, const uint8_t data[
     if(len > 0) Wire.write(data, len);
     
     char hex[4];
-    SERIALPRINT("[I2C] Sending cmd: 0x");
+    DEBUGPRINT("[I2C] Sending cmd: 0x");
     sprintf(hex, "%.2X ", cmd);
-    SERIALPRINT(hex);
-    #if defined(SERIAL_PRINT)
+    DEBUGPRINT(hex);
+    #if defined(DEBUG_PRINT)
     if(len > 0) {
-        SERIALPRINT(" Data: ");
+        DEBUGPRINT(" Data: ");
         for(int c=0;c<len;c++) {
         sprintf(hex, "%.2X ", data[c]);
-        SERIALPRINT( hex );
+        DEBUGPRINT( hex );
         }
     }
     #endif
-    SERIALPRINT_LN(" | END");
+    DEBUGPRINT_LN(" | END");
 
 
     // if(len > 0) {
@@ -342,20 +342,20 @@ bool I2CMaster::_sendCmd(uint8_t address, const uint8_t cmd, const uint8_t data[
     //     }
     // }
     int8_t ret = Wire.endTransmission(sendStop);
-    #if defined(SERIAL_PRINT)
-        if(ret!=0) SERIALPRINT(F("[I2C _sendCmd Error - ]"));
+    #if defined(DEBUG_PRINT)
+        if(ret!=0) DEBUGPRINT(F("[I2C _sendCmd Error - ]"));
         switch (ret)
         {
         case 1:
-            SERIALPRINT_LN(F("Data too long for Tx buf"));  break;
+            DEBUGPRINT_LN(F("Data too long for Tx buf"));  break;
         case 2:
-            SERIALPRINT_LN(F("NACK on Tx of addr"));  break;
+            DEBUGPRINT_LN(F("NACK on Tx of addr"));  break;
         case 3:
-            SERIALPRINT_LN(F("NACK on Tx of data"));  break;
+            DEBUGPRINT_LN(F("NACK on Tx of data"));  break;
         case 4:
-            SERIALPRINT_LN(F("Other error"));  break;
+            DEBUGPRINT_LN(F("Other error"));  break;
         case 5:
-            SERIALPRINT_LN(F("Timeout"));  break;
+            DEBUGPRINT_LN(F("Timeout"));  break;
         default:
             break;
         }
@@ -370,16 +370,12 @@ bool I2CMaster::_getResponse(uint8_t address, uint8_t respLength, uint8_t data[]
             if (!Wire.available()) {
                 break; // unexpected; fall through to retry
             }
-            SERIALPRINT("[I2C] Got response data: ");
+            DEBUGPRINT("[I2C] Got response data: ");
             for (uint8_t c = 0; c < respLength; c++) {
                 data[c] = Wire.read();
-                #if defined(SERIAL_PRINT)
-                    char hex[4];
-                    sprintf(hex, "%.2X ", data[c]);
-                    SERIALPRINT( hex );
-                #endif
+                DEBUGPRINT_HEX( data[c] );
             }            
-            SERIALPRINT_LN(" | END");
+            DEBUGPRINT_LN(" | END");
             return true;
         }
         delay(5);

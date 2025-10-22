@@ -2,6 +2,7 @@
 #define MINER_CLIENT_H
 
 #include "pool.h"
+#include "I2CMaster.h"
 
 #include <DSHA1.h>
 #include <Arduino.h>
@@ -45,7 +46,7 @@ class MinerClient {
     void init();
     void setMasterMiner(bool);
     Pool* getAttachedPool();
-    
+
     // Register a generic event callback
     void onEvent(MinerEventCallback cb);
     void reset();
@@ -72,6 +73,7 @@ class MinerClient {
     bool _isMasterMiner = false;
 
     Pool* _pool;
+    I2CMaster* _i2c;
 
     // state
     enum DUINO_STATE _state = DUINO_STATE_NONE;
