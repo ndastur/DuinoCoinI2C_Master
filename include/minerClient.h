@@ -55,7 +55,7 @@ class MinerClient {
     bool setupSlaves();
 
     void loop();
-    bool findNonce(const String& seed40, const String& target40, uint32_t diff, uint32_t &nonce_found, uint32_t &elapsed_time_us);
+    bool findNonce(const char *seed40, const char *target40, uint32_t diff, uint32_t &nonce_found, uint32_t &elapsed_time_us);
 
   private:
     // State Machine
@@ -85,9 +85,9 @@ class MinerClient {
       enum DUINO_STATE _state = DUINO_STATE_NONE;
       RunEvery _slaveMiningStatusTimer = RunEvery(200);
       unsigned long _jobStartTime;
-      String seed;
-      String target;
-      uint32_t diff;
+      char seed[41] = {0};
+      char target[41] = {0};
+      uint32_t diff = 0;
     };
     
     ClientStruct _clients[MAX_SLAVES];
@@ -120,8 +120,7 @@ class MinerClient {
     
     // Protocol steps
     bool _handleMotd();
-    bool _solveAndSubmit(const String& seed40, const String& target40, uint32_t diff);
-    uint8_t *_hexStringToUint8Array(const String &hexString, uint8_t *uint8Array, const uint32_t arrayLength);
+    bool _solveAndSubmit(const char *seed40, const char *target40, uint32_t diff);
 
     inline void _emit(MinerEvent ev, const MinerEventData& d) {
       if (_cb) _cb(ev, d);

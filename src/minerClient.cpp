@@ -137,8 +137,10 @@ void MinerClient::loop() {
       case DUINO_STATE_JOB_WAIT: {
         Job* job = client._pool->getJob();
         if(job != nullptr) {
-          client.seed = String(job->prevHash);
-          client.target = String(job->expectedHash);
+          strncpy(client.seed, job->prevHash.c_str(), 40);
+          client.seed[40] = '\0';
+          strncpy(client.target, job->expectedHash.c_str(), 40);
+          client.target[40] = '\0';
           client.diff = job->difficulty;
           _setState(DUINO_STATE_MINING, c);
           }
@@ -159,7 +161,7 @@ void MinerClient::loop() {
           }
           else {
             // Need to send to worker slave device
-            _i2c->sendJobData(_clients[c]._address, client.seed.c_str(), client.target.c_str(), (uint8_t)client.diff);
+            _i2c->sendJobData(_clients[c]._address, client.seed, client.target, (uint8_t)client.diff);
             client._jobStartTime = millis();
             _setState(DUINO_STATE_MINING_I2C, c);
           }
@@ -209,13 +211,13 @@ void MinerClient::loop() {
   Find the nonce
   diff = the job diff * 100 + 1
 */
-bool MinerClient::findNonce(const String& seed40, const String& target40, uint32_t diff, uint32_t &nonce_found, uint32_t &elapsed_time_us)
+bool MinerClient::findNonce(const char *seed40, const char *target40, uint32_t diff, uint32_t &nonce_found, uint32_t &elapsed_time_us)
 {
 uint8_t __hashArray[20];
 uint8_t __expected_hash[20];
 
   hexStringToUint8Array(target40, __expected_hash, 20);
-  _dsha1->reset().write((const unsigned char *)seed40.c_str(), seed40.length());
+  _dsha1->reset().write( (const unsigned char *)seed40, 40);
 
   const uint32_t start_time = micros();
   _max_micros_elapsed(start_time, 0);
@@ -263,20 +265,9 @@ bool MinerClient::_isStateStuck(int idx) {
   return (millis() - _clients[idx]._stateStartMS > STATE_STUCK_TIMEOUT) ? true : false;
 }
 
-bool MinerClient::_solveAndSubmit(const String& seed40, const String& target40, uint32_t diff) {
+bool MinerClient::_solveAndSubmit(const char *seed40, const char *target40, uint32_t diff) {
   uint32_t found_nonce = 0;
   uint32_t elapsed_time = 0;
-
-  assert(seed40.length() == 40);
-  assert(target40.length() == 40);
-  assert(diff > 0 && diff < 1024000);
-
-  DEBUGPRINT("Solving: |");
-  DEBUGPRINT(seed40);
-  DEBUGPRINT("| |");
-  DEBUGPRINT(target40);
-  DEBUGPRINT("| :: ");
-  DEBUGPRINT_LN(diff);
 
   if( this->findNonce(seed40, target40, diff, found_nonce, elapsed_time) ) {
     float elapsed_time_s = elapsed_time * .000001f;
