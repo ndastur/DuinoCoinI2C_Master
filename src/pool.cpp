@@ -104,9 +104,12 @@ void Pool::loop() {
   case POOL_STATE_VERSION_WAIT:
     if(_client.available()) {
       _poolVersion = _client.readStringUntil(END_TOKEN);
-      _poolConnectTime = millis();
 
       _setState(POOL_STATE_IDLE);
+      _poolConnectTime = millis();
+
+      DEBUGPRINT("[POOL] connected ... ");
+      DEBUGPRINT_LN(_minerName);
 
       // Only send the connected event once we have a server reply with the version
       char buf[128];
@@ -134,7 +137,7 @@ void Pool::loop() {
       _poolJob.expectedHash = target;
       _poolJob.prevHash = seed;
 
-      _setState(POOL_STATE_IDLE);
+      _setState(POOL_STATE_SHARE_WAIT);
 
       PoolEventData ed;
       ed.jobDataPtr = &_poolJob;
@@ -147,6 +150,10 @@ void Pool::loop() {
   }
     break;
 
+  case POOL_STATE_SHARE_WAIT:
+    // No-op
+    break;
+    
   case POOL_STATE_SUBMITTED:
     _handleSubmitJobResponse();
     _setState(POOL_STATE_IDLE);     // our work is done
@@ -177,6 +184,9 @@ bool Pool::update() {
 
 bool Pool::connect() {
   if (_client.connected()) return true;
+
+  // Not connected so clear state
+  _setState(POOL_STATE_NONE);
 
   if (_host.isEmpty() || _port <= 0) {
     if(!update()) return false;
@@ -212,7 +222,7 @@ bool Pool::disconnect() {
 
 bool Pool::requestMOTD() {
   if(_state != POOL_STATE_IDLE) {
-    Serial.println("[POOL] request MOTD State not idle ...");
+    DEBUGPRINT_LN("[POOL] request MOTD State not idle ...");
     return false;
   }
   if(!connect()) return false;
@@ -224,11 +234,15 @@ bool Pool::requestMOTD() {
 
 // Request a job from the Pool
 bool Pool::requestJob() {
+  if(!connect()) return false;
+
   if(_state != POOL_STATE_IDLE) {
-    DEBUGPRINT_LN("[POOL] request for job. Pool state not idle ...");
+    DEBUGPRINT("[POOL] ");
+    DEBUGPRINT(_minerName);
+    DEBUGPRINT(" request for job. Pool state not idle. State: ");
+    DEBUGPRINT_LN(_state);
     return false;
   }
-  if(!connect()) return false;
 
   _poolJob.difficulty = 0;
 
@@ -241,12 +255,14 @@ bool Pool::requestJob() {
     + SEP_TOKEN + _startingDifficulty
     + SEP_TOKEN + MINING_KEY;
   
-  DEBUGPRINT("[POOL] req job with: ");
+  DEBUGPRINT("[POOL] ");
+  DEBUGPRINT(_minerName);
+  DEBUGPRINT(" Req job: ");
   DEBUGPRINT_LN(line);
-    
+
   bool ret = _sendLine(line);
 
-  if(ret) {
+  if(ret == true) {
     _setState(POOL_STATE_JOB_WAIT);
   }
   return ret;

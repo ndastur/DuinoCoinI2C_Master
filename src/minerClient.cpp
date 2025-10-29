@@ -56,11 +56,6 @@ void MinerClient::reset() {
   for(uint8_t c=0; c < _numMinerClients; c++) {
     _setState(DUINO_STATE_NONE, c);
   }
-  _share_count = 0;
-  _accepted_count = 0;
-  _block_count = 0;
-  _last_share_count = 0;
-  _poolConnectTime = 0;
 }
 
 void MinerClient::setMining(bool flag) {
@@ -102,7 +97,6 @@ bool MinerClient::setupSlaves() {
 
 void MinerClient::loop() {
   for(u_int8_t c = 0; c < _numMinerClients; c++) {
-    assert(c == 0);
     auto& client = _clients[c];
 
     // If we're mining always check if we're still connected, if not then
@@ -121,7 +115,7 @@ void MinerClient::loop() {
 
       case DUINO_STATE_IDLE:
         if(_isMining && client._pool->isConnected()) {
-          _setState(DUINO_STATE_JOB_REQUEST, 0);
+          _setState(DUINO_STATE_JOB_REQUEST, c);
         }
         break;
 
@@ -129,8 +123,11 @@ void MinerClient::loop() {
         if(!_isMining) {
           return;
         }
-        if(client._pool->requestJob()) {
-          _setState(DUINO_STATE_JOB_WAIT, c);
+
+        if(client.slaveJobReqTimer.shouldRun()) {
+          if(client._pool->requestJob()) {
+            _setState(DUINO_STATE_JOB_WAIT, c);
+          }
         }
         break;
 
@@ -155,6 +152,8 @@ void MinerClient::loop() {
           if(_isMasterMiner) {
             if (_solveAndSubmit(client.seed, client.target, client.diff * 100 + 1)) {
               _setState(DUINO_STATE_SHARE_SUBMITTED, c);
+              // Update stats
+              client.stats_share_count++;
             } else {
               _setState(DUINO_STATE_JOB_REQUEST, c);  // start again
             }
@@ -170,7 +169,7 @@ void MinerClient::loop() {
 
       case DUINO_STATE_MINING_I2C:
         // test if job solved
-        if(client._slaveMiningStatusTimer.shouldRun()) {
+        if(client.slaveMiningStatusTimer.shouldRun()) {
           uint16_t found_nonce;
           uint8_t timeTaken;
           if(_i2c->getJobStatus(_clients[c]._address, found_nonce, timeTaken)) {
@@ -184,6 +183,9 @@ void MinerClient::loop() {
             DEBUGPRINT(timeTaken);
             DEBUGPRINT("ms. Master Estimate: ");
             DEBUGPRINT_LN(masterTimeTaken);
+
+            // Update stats
+            client.stats_share_count++;
 
             client._pool->submitJob(found_nonce, masterTimeTaken*1000);
 
@@ -245,7 +247,6 @@ uint8_t __expected_hash[20];
 // -----------------------------------------------
 
 void MinerClient::_setState(DUINO_STATE state, int idx) {
-  assert(_isMasterMiner && idx == 0);
   assert(idx < _numMinerClients);
 
   _clients[idx]._state = state;
@@ -253,7 +254,6 @@ void MinerClient::_setState(DUINO_STATE state, int idx) {
 }
 
 bool MinerClient::_isStateStuck(int idx) {
-  assert(_isMasterMiner && idx == 0);
   assert(idx < _numMinerClients);
 
   if (_clients[idx]._state == DUINO_STATE_IDLE
@@ -273,7 +273,6 @@ bool MinerClient::_solveAndSubmit(const char *seed40, const char *target40, uint
     float elapsed_time_s = elapsed_time * .000001f;
     _last_hashed_per_sec = (found_nonce / elapsed_time_s) * 1;
     _last_hashrate_khs = _last_hashed_per_sec / 1000.0f;
-    _share_count++;
   }
   else {
     _emit_nodata(ME_SOLVE_FAILED);

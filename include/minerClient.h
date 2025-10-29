@@ -17,9 +17,6 @@
 enum MinerEvent : uint8_t {
   ME_SOLVED,           // payload: nonce / hashrate_khs
   ME_SOLVE_FAILED,
-  ME_RESULT_GOOD,      // payload: share accepted
-  ME_RESULT_BAD,       // payload: share rejected
-  ME_RESULT_BLOCK,   // payload: share blocked/rate-limited
   ME_ERROR,            // payload: text = error message
   ME_LOG               // optional general logs
 };
@@ -79,15 +76,21 @@ class MinerClient {
     int _numMinerClients;
     struct ClientStruct
     {
-      Pool* _pool = nullptr;
+      Pool* _pool = nullptr;      
       uint8_t _address;
       uint32_t  _stateStartMS = 0;
       enum DUINO_STATE _state = DUINO_STATE_NONE;
-      RunEvery _slaveMiningStatusTimer = RunEvery(200);
       unsigned long _jobStartTime;
       char seed[41] = {0};
       char target[41] = {0};
       uint32_t diff = 0;
+      RunEvery slaveMiningStatusTimer = RunEvery(150);
+      RunEvery slaveJobReqTimer = RunEvery(50);
+
+      // Stats
+      unsigned int stats_share_count = 0;
+      unsigned int stats_accepted_count = 0;
+      unsigned int stats_block_count = 0;
     };
     
     ClientStruct _clients[MAX_SLAVES];
@@ -100,13 +103,6 @@ class MinerClient {
 
     // Error
     String _last_err;
-
-    unsigned int _share_count = 0;
-    unsigned int _accepted_count = 0;
-    unsigned int _block_count = 0;
-    unsigned int _last_share_count = 0;
-
-    unsigned long _poolConnectTime = 0;
 
     // callback
     MinerEventCallback _cb = nullptr;

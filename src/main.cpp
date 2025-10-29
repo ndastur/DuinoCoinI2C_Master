@@ -62,6 +62,19 @@ void poolEventSink(PoolEvent ev, const PoolEventData& d) {
     DEBUGPRINT("      Diff: ");
     DEBUGPRINT_LN(d.jobDataPtr->difficulty);
     break;
+  case POOLEVT_RESULT_GOOD:
+    DEBUGPRINT_LN("[DUCO] Share accepted");
+    blinkStatus(BLINK_SHARE_GOOD);
+    break;
+  case POOLEVT_RESULT_BAD:
+    DEBUGPRINT("[DUCO] Share rejected: ");
+    DEBUGPRINT_LN(d.text ? d.text : "");
+    blinkStatus(BLINK_SHARE_ERROR);
+    break;
+  case POOLEVT_RESULT_BLOCK:
+    DEBUGPRINT_LN("[DUCO] Found a BLOCK ... Whoa!");
+    blinkStatus(BLINK_SHARE_BLOCKFOUND);
+    break;
   case POOLEVT_ERROR:
     DEBUGPRINT("[MAIN] POOLEVT_ERROR: ");
     DEBUGPRINT_LN(d.text);
@@ -72,7 +85,6 @@ void poolEventSink(PoolEvent ev, const PoolEventData& d) {
   }
 }
 
-#if defined(MINE_ON_MASTER)
 // Example: bridge events to your I2C master, WS, or Serial
 void minerEventSink(MinerEvent ev, const MinerEventData& d) {
   switch (ev) {
@@ -87,19 +99,6 @@ void minerEventSink(MinerEvent ev, const MinerEventData& d) {
     case ME_SOLVE_FAILED:
       DEBUGPRINT_LN("[DUCO] Failed to solve hash.\n");
       break;
-    case ME_RESULT_GOOD:
-      DEBUGPRINT_LN("[DUCO] Share accepted");
-      blinkStatus(BLINK_SHARE_GOOD);
-      break;
-    case ME_RESULT_BAD:
-      DEBUGPRINT("[DUCO] Share rejected: ");
-      DEBUGPRINT_LN(d.text ? d.text : "");
-      blinkStatus(BLINK_SHARE_ERROR);
-      break;
-    case ME_RESULT_BLOCK:
-      DEBUGPRINT_LN("[DUCO] Found a BLOCK ... Whoa!");
-      blinkStatus(BLINK_SHARE_BLOCKFOUND);
-      break;
     case ME_ERROR:
       DEBUGPRINT("[DUCO] Error: ");
       DEBUGPRINT_LN(d.text ? d.text : "");
@@ -108,7 +107,6 @@ void minerEventSink(MinerEvent ev, const MinerEventData& d) {
       break;
   }
 }
-#endif
 
 uint8_t testSendBytes = 0;
 
@@ -146,22 +144,11 @@ void setup() {
     masterMiner->setMining(true);         // Start mining once connected
   #endif
 
-  //slaveMiner = new MinerClient(DUCO_USER, false);
-  //slaveMiner->onEvent(minerEventSink);
-  //slaveMiner->setupSlaves();
-  //slaveMiner->setMining(true);
+  slaveMiner = new MinerClient(DUCO_USER, false);
+  slaveMiner->onEvent(minerEventSink);
+  slaveMiner->setupSlaves();
+  slaveMiner->setMining(true);
   ledSetupUpFinished();
-
-  // if(I2C.newJobRequest(0x30)) {
-  //   uint8_t lastHashStr[] = "bf55bad9a75c5b375a1457b0a252d75d60abce13";
-  //   // uint8_t lh[20] = {0xbf,0x55,0xba,0xd9,0xa7,0x5c,0x5b,0x37,0x5a,0x14,0x57,0xb0,0xa2,0x52,0xd7,0x5d,0x60,0xab,0xce,0x13};
-  //   uint8_t eh[20] = {0xe6,0xa9,0x7a,0x92,0x27,0xad,0x70,0x21,0x9a,0x95,0x32,0x3a,0x82,0x2a,0x70,0x74,0xd8,0x13,0x24,0x8b};
-
-  //   if(!I2C.sendJobData(0x30, lastHashStr, eh, 10)) {
-  //     DEBUGPRINT_LN("Sending job failed :(");
-  //   }
-  // }
-  // job_state = 3;
 }
 
 void loop() {
@@ -219,7 +206,7 @@ void loop() {
     masterMiner->loop();
   #endif
 
-  //slaveMiner->loop();
+  slaveMiner->loop();
 
   // Small delay to keep CPU cool; adjust as needed
   delay(5);

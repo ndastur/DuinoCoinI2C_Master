@@ -89,11 +89,6 @@ class Pool {
     uint8_t _tryCount = 0;
     uint32_t lastAttempt = 0;
 
-    // Jobs fifo queue
-    // uint8_t jobsFifoRead = 0;
-    // uint8_t jobsFifoWrite = 0;
-    // Job jobsAVR[5];
-    // Job jobsESP[1];
     Job _poolJob;
 
     // Error
@@ -107,6 +102,7 @@ class Pool {
       POOL_STATE_VERSION_WAIT,
       POOL_STATE_MOTD_WAIT,
       POOL_STATE_JOB_WAIT,
+      POOL_STATE_SHARE_WAIT,      // waiting for share to be submitted
       POOL_STATE_SUBMITTED
     };
 
@@ -138,7 +134,6 @@ class Pool {
     inline void _emit_nodata(PoolEvent ev) {
       PoolEventData d; _emit(ev, d);
     }
-
 };
 
 #endif
