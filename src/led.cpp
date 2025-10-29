@@ -106,6 +106,11 @@ void blinkStatus(BLINK_STATUSES b) {
       blink(2, 0x00FFFF00);  // yellow
     #endif
     break;
+  case BLINK_SLAVE_SHARE_GOOD:
+    #if defined(LED_MODE) && LED_MODE == 2
+      blink(2, 0x000000FF);  // green
+    #endif
+    break;
   case BLINK_SHARE_GOOD:
     #if defined(LED_MODE) && LED_MODE == 2
       blink(2, 0x000000FF);  // green

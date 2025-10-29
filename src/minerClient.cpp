@@ -2,10 +2,12 @@
 #include "config.h"
 #include "utils.h"
 #include "pool.h"
-#include "wirewrap.h"
+#include "I2CMaster.h"
+//#include "wirewrap.h"
 #include "network_services.h"
 #include "Counter.h"
 #include "DSHA1.h"
+#include "led.h"
 
 #include <Arduino.h>
 #include <WiFiClient.h>
@@ -14,26 +16,36 @@
 #define STATE_STUCK_TIMEOUT 30000UL
 
 // ---------------- ctor/config ----------------
-MinerClient::MinerClient(const String username, DeviceType deviceType)
+// Master / Slave flag must be set in ctor as not mutable
+MinerClient::MinerClient(const String username, bool isMaster)
   : _username(username) {
-    _pool = new Pool(username, MINING_KEY, deviceType);
-    if(deviceType == DEVICE_ESP32) {
-      _isMasterMiner = true;          // has to be a master
-    }
+    _isMasterMiner = isMaster;
     init();
   }
 
 void MinerClient::init() {
-  _dsha1 = new DSHA1();
-  _dsha1->warmup();
+  if(_isMasterMiner) {
+    _numMinerClients = 1;
+    _clients[0]._pool = new Pool(_username, MINING_KEY, DEVICE_ESP32);
+    _clients[0]._pool->setMinerName("NDMaster");
+    // Only for masters
+    _dsha1 = new DSHA1();
+    _dsha1->warmup();
+  }
+  else {
+    _i2c = new I2CMaster();
+  }
 }
 
-void MinerClient::setMasterMiner(bool flag = true) {
-  _isMasterMiner = flag;
-}
+Pool* MinerClient::getAttachedPool(int idx) {
+  if(_isMasterMiner && idx != 0) {
+    MinerEventData ed;
+    ed.text = "Master miner can only have one client, an index > 0 was passed";
+    _emit(ME_ERROR, ed);
+    return nullptr;
+  }
 
-Pool* MinerClient::getAttachedPool() {
-  return _pool;
+  return _clients[idx]._pool;
 }
 
 void MinerClient::onEvent(MinerEventCallback cb) {
@@ -41,89 +53,155 @@ void MinerClient::onEvent(MinerEventCallback cb) {
 }
 
 void MinerClient::reset() {
-  _setState(DUINO_STATE_NONE);
+  for(uint8_t c=0; c < _numMinerClients; c++) {
+    _setState(DUINO_STATE_NONE, c);
+  }
   _share_count = 0;
   _accepted_count = 0;
   _block_count = 0;
   _last_share_count = 0;
-  _startTime = millis();
   _poolConnectTime = 0;
 }
 
 void MinerClient::setMining(bool flag) {
   _isMining = flag;
-  if(flag == false) {
-    _setState(DUINO_STATE_NONE);
-  }
-  _pool->disconnect();
+
+    for(uint8_t c=0; c < _numMinerClients; c++) {
+      if(flag == false) {
+        _clients[c]._pool->disconnect();
+      }
+      
+      // Set state to none in both cases
+      _setState(DUINO_STATE_NONE, c);
+    }
 }
 
-// Set a name for the miner, this helps id worker in the wallet UI
-void MinerClient::setMinerName(const String& name) {
-  _pool->setMinerName(name);
+// Setup our slave devices
+// This might get rolled into the start-up code at some point
+// for the moment leave as function to call separately 
+bool MinerClient::setupSlaves() {
+  assert(!_isMasterMiner);
+
+  if(_i2c == nullptr) {
+    _i2c = new I2CMaster();
+  }
+
+  _i2c->scan(true);
+  _numMinerClients = _i2c->getFoundSlaveCount(); 
+  if(_numMinerClients > 0) {
+    _i2c->dumpSlaves();
+    // setup a client for each slave as each one needs it's own pool connection etc
+    for(uint8_t c = 0; c < _numMinerClients; c++) {
+      _clients[c]._pool = new Pool(_username, MINING_KEY, DEVICE_AVR);
+      _clients[c]._address = _i2c->getFoundSlaveAddress(c);
+      _clients[c]._pool->setMinerName(String("AVRSlave") + String(_clients[c]._address, HEX));
+    }
+  }
+  return true;
 }
 
 void MinerClient::loop() {
-  // If we're mining always check if we're still connected, if not then
-  // any work will be lost and force new pool connection
-  if(_isMining && !_pool->isConnected() ) {
-    _pool->connect();
-    _setState(DUINO_STATE_IDLE);     // can't mine if pool not connected
-  }
+  for(u_int8_t c = 0; c < _numMinerClients; c++) {
+    assert(c == 0);
+    auto& client = _clients[c];
 
-  _pool->loop();
+    // If we're mining always check if we're still connected, if not then
+    // any work will be lost and force new pool connection
+    if(_isMining && !client._pool->isConnected() ) {
+      client._pool->connect();
+      _setState(DUINO_STATE_IDLE, c);     // can't mine if pool not connected
+    }
 
-  switch (_state) {
-    case DUINO_STATE_IDLE:
-      if(_isMining && _pool->isConnected()) {
-        _setState(DUINO_STATE_JOB_REQUEST);
-      }
-      break;
+    client._pool->loop();
 
-    case DUINO_STATE_JOB_REQUEST:
-      if(!_isMining) {
-        return;
-      }
-      if(_pool->requestJob()) {
-        _setState(DUINO_STATE_JOB_WAIT);
-      }
-      break;
+    switch (client._state) {
+      case DUINO_STATE_NONE:
+        // NO-OP
+        break;
 
-    case DUINO_STATE_JOB_WAIT: {
-      Job* job = _pool->getJob();
-      if(job != nullptr) {
-        _seed = job->prevHash;
-        _target = job->expectedHash;
-        _diff = job->difficulty;
-        _setState(DUINO_STATE_MINING);
+      case DUINO_STATE_IDLE:
+        if(_isMining && client._pool->isConnected()) {
+          _setState(DUINO_STATE_JOB_REQUEST, 0);
         }
-      }
-      break;
+        break;
 
-    case DUINO_STATE_MINING:
-      if(!_isMining)
-        return;
-
-      if(_isMasterMiner) {
-        if (this->_solveAndSubmit(_seed, _target, _diff * 100 + 1)) {
-          _setState(DUINO_STATE_SHARE_SUBMITTED);
-        } else {
-          _setState(DUINO_STATE_JOB_REQUEST);  // start again
+      case DUINO_STATE_JOB_REQUEST:
+        if(!_isMining) {
+          return;
         }
-      }
-      else {
-        // Need to send to worker slave device
-      }
-      break;
+        if(client._pool->requestJob()) {
+          _setState(DUINO_STATE_JOB_WAIT, c);
+        }
+        break;
 
-    case DUINO_STATE_SHARE_SUBMITTED:    
-      // Get a new job, regardless of the result
-      _setState(DUINO_STATE_JOB_REQUEST);
-      break;
+      case DUINO_STATE_JOB_WAIT: {
+        Job* job = client._pool->getJob();
+        if(job != nullptr) {
+          client.seed = String(job->prevHash);
+          client.target = String(job->expectedHash);
+          client.diff = job->difficulty;
+          _setState(DUINO_STATE_MINING, c);
+          }
+        break;
+        }
 
-    default:
-      DEBUGPRINT_LN("[MINER_CLIENT] Unknown State");
-      break;
+      case DUINO_STATE_MINING:
+        {
+          if(!_isMining)
+            return;
+
+          if(_isMasterMiner) {
+            if (_solveAndSubmit(client.seed, client.target, client.diff * 100 + 1)) {
+              _setState(DUINO_STATE_SHARE_SUBMITTED, c);
+            } else {
+              _setState(DUINO_STATE_JOB_REQUEST, c);  // start again
+            }
+          }
+          else {
+            // Need to send to worker slave device
+            _i2c->sendJobData(_clients[c]._address, client.seed.c_str(), client.target.c_str(), (uint8_t)client.diff);
+            client._jobStartTime = millis();
+            _setState(DUINO_STATE_MINING_I2C, c);
+          }
+          break;
+        }
+
+      case DUINO_STATE_MINING_I2C:
+        // test if job solved
+        if(client._slaveMiningStatusTimer.shouldRun()) {
+          uint16_t found_nonce;
+          uint8_t timeTaken;
+          if(_i2c->getJobStatus(_clients[c]._address, found_nonce, timeTaken)) {
+            if(found_nonce == 0) {
+              // although work finished, error. Probably start diff too high
+              _setState(DUINO_STATE_NONE, c); // stop while we test
+              break;
+            }
+            uint16_t masterTimeTaken = millis() - client._jobStartTime;
+            DEBUGPRINT("[MINER_CLIENT] i2c slave solved hash in ");
+            DEBUGPRINT(timeTaken);
+            DEBUGPRINT("ms. Master Estimate: ");
+            DEBUGPRINT_LN(masterTimeTaken);
+
+            client._pool->submitJob(found_nonce, masterTimeTaken*1000);
+
+            // Reset the slave ready to receive data, also doesn't then respond as data available
+            _i2c->sendDataBegin(_clients[c]._address);
+            blinkStatus(BLINK_SHARE_GOOD);
+            _setState(DUINO_STATE_JOB_REQUEST, c);  // start again
+          }
+        }
+        break;
+
+      case DUINO_STATE_SHARE_SUBMITTED:    
+        // Get a new job, regardless of the result
+        _setState(DUINO_STATE_JOB_REQUEST, c);
+        break;
+
+      default:
+        DEBUGPRINT_LN("[MINER_CLIENT] Unknown State");
+        break;
+      }
     }
 }
 
@@ -136,7 +214,7 @@ bool MinerClient::findNonce(const String& seed40, const String& target40, uint32
 uint8_t __hashArray[20];
 uint8_t __expected_hash[20];
 
-  hexStringToUint8Array(target40.c_str(), __expected_hash, 20);
+  hexStringToUint8Array(target40, __expected_hash, 20);
   _dsha1->reset().write((const unsigned char *)seed40.c_str(), seed40.length());
 
   const uint32_t start_time = micros();
@@ -164,27 +242,41 @@ uint8_t __expected_hash[20];
 //               ------ PRIVATE -------
 // -----------------------------------------------
 
-void MinerClient::_setState(DUINO_STATE state) {
-  _state = state;
-  _stateStartMS = (state == DUINO_STATE_NONE) ? 0 : millis();
+void MinerClient::_setState(DUINO_STATE state, int idx) {
+  assert(_isMasterMiner && idx == 0);
+  assert(idx < _numMinerClients);
+
+  _clients[idx]._state = state;
+  _clients[idx]._stateStartMS = (state == DUINO_STATE_NONE) ? 0 : millis();
 }
 
-bool MinerClient::_is_state_stuck() {
-  if (_state == DUINO_STATE_IDLE
-    || _state == DUINO_STATE_NONE)
+bool MinerClient::_isStateStuck(int idx) {
+  assert(_isMasterMiner && idx == 0);
+  assert(idx < _numMinerClients);
+
+  if (_clients[idx]._state == DUINO_STATE_IDLE
+    || _clients[idx]._state == DUINO_STATE_NONE)
   {
       return false;
   }
   
-  return (millis() - _stateStartMS > STATE_STUCK_TIMEOUT) ? true : false;
+  return (millis() - _clients[idx]._stateStartMS > STATE_STUCK_TIMEOUT) ? true : false;
 }
 
 bool MinerClient::_solveAndSubmit(const String& seed40, const String& target40, uint32_t diff) {
   uint32_t found_nonce = 0;
   uint32_t elapsed_time = 0;
 
-  DEBUGPRINT("Solving: ");
-  DEBUGPRINT_LN(seed40 + " " + target40 + " " + String(diff));
+  assert(seed40.length() == 40);
+  assert(target40.length() == 40);
+  assert(diff > 0 && diff < 1024000);
+
+  DEBUGPRINT("Solving: |");
+  DEBUGPRINT(seed40);
+  DEBUGPRINT("| |");
+  DEBUGPRINT(target40);
+  DEBUGPRINT("| :: ");
+  DEBUGPRINT_LN(diff);
 
   if( this->findNonce(seed40, target40, diff, found_nonce, elapsed_time) ) {
     float elapsed_time_s = elapsed_time * .000001f;
@@ -202,7 +294,7 @@ bool MinerClient::_solveAndSubmit(const String& seed40, const String& target40, 
   solved.hashrate_khs = _last_hashrate_khs;
   _emit(ME_SOLVED, solved);
 
-  return _pool->submitJob(found_nonce, elapsed_time);
+  return _clients[0]._pool->submitJob(found_nonce, elapsed_time);
 }
 
 bool MinerClient::_max_micros_elapsed(unsigned long current, unsigned long max_elapsed) {

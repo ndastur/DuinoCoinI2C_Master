@@ -35,7 +35,8 @@
 
 
 // ---- App settings ----
-#define APP_NAME        "Official ESP32-S2 Miner" //      "ESP32S ND Master"
+#define APP_NAME_MASTER "Official ESP32-S2 Miner " //      "ESP32S ND Master"
+#define APP_NAME_SLAVE  "Official AVR Miner "
 #define APP_VERSION     "4.3"
 
 // Optional: pool/port, pins, etc.

@@ -6,6 +6,7 @@
 #include "I2CMaster.h"
 #include "runevery.h"
 #include "led.h"
+#include "display.h"
 
 #include <ArduinoOTA.h>
 #include <Arduino.h>
@@ -13,15 +14,13 @@
 #define REPORT_INTERVAL 60000
 #define REPEATED_WIRE_SEND_COUNT 1      // 1 for AVR, 8 for RP2040
 
-I2CMaster I2C;
-
 RunEvery reportTimer(REPORT_INTERVAL);
 RunEvery scanTimer(50000);
-RunEvery slaveStatusTimer(50);
 
 #if defined(MINE_ON_MASTER)
-MinerClient *masterMiner;
+  MinerClient *masterMiner;
 #endif
+MinerClient *slaveMiner;
 
 void restart_esp(String msg);
 void poolEventSink(PoolEvent ev, const PoolEventData& d);
@@ -78,7 +77,7 @@ void poolEventSink(PoolEvent ev, const PoolEventData& d) {
 void minerEventSink(MinerEvent ev, const MinerEventData& d) {
   switch (ev) {
     case ME_SOLVED:
-      DEBUGPRINT("[DUCO] Solved: nonce=%lu, HR=%.2f kH/s\n");
+      DEBUGPRINT("[DUCO] Solved: nonce=");
       DEBUGPRINT((unsigned long)d.nonce);
       DEBUGPRINT(", HR=");
       DEBUGPRINT(d.hashrate_khs);
@@ -112,9 +111,8 @@ void minerEventSink(MinerEvent ev, const MinerEventData& d) {
 #endif
 
 uint8_t testSendBytes = 0;
-uint8_t job_state = 1;
 
-// SETUP the mining master
+// SETUP
 void setup() {
 
   Serial.begin(115200);
@@ -129,28 +127,29 @@ void setup() {
     restart_esp("Please set a valid MINING_KEY in config.h");
   }
 
-  wifi_setup();
-  ota_setup();
+  display_setup();
 
-  I2C.begin();
+  wifi_setup();
+  showWiFi();
+
+  ota_setup();
   
   web_setup();
 
-  Serial.printf("[%s] v%s ready for action!\n", APP_NAME, APP_VERSION);
+  SERIALPRINT_LN("Ready for action!");
   delay(200);
   
-  I2C.scan(true);
-
   #if defined(MINE_ON_MASTER)
-    masterMiner = new MinerClient(DUCO_USER, DEVICE_ESP32 );
+    masterMiner = new MinerClient(DUCO_USER, true);
     masterMiner->onEvent(minerEventSink);
-    masterMiner->setMinerName("ESP32MasterMiner");
     masterMiner->getAttachedPool()->onEvent(poolEventSink);
-
-    masterMiner->setMasterMiner(true);    // Setup this one as a miner on this device
     masterMiner->setMining(true);         // Start mining once connected
   #endif
 
+  //slaveMiner = new MinerClient(DUCO_USER, false);
+  //slaveMiner->onEvent(minerEventSink);
+  //slaveMiner->setupSlaves();
+  //slaveMiner->setMining(true);
   ledSetupUpFinished();
 
   // if(I2C.newJobRequest(0x30)) {
@@ -178,13 +177,13 @@ void loop() {
   web_loop();
 
   if(scanTimer.shouldRun()) {
-    I2C.scan(true);
+    //I2C.scan(true);
 
     // Ping & query heap metrics
     
-    for (uint8_t idx = 0; idx < I2C.getFoundSlaveCount(); idx++) {
-      uint8_t addr = I2C.getFoundSlave(idx);
-      if (!I2C.probe(addr)) continue;
+    // for (uint8_t idx = 0; idx < I2C.getFoundSlaveCount(); idx++) {
+    //   uint8_t addr = I2C.getFoundSlave(idx);
+    //   if (!I2C.probe(addr)) continue;
 
       // if (I2C.ping(addr)) {
       //   Serial.printf("Addr 0x%02X: ping OK\n", addr);
@@ -212,66 +211,15 @@ void loop() {
       //   #endif
       // }
       
-      switch (job_state)
-      {
-      case 0:
-        DEBUGPRINT_LN(F("LOOP JOB STATE:: not running."));
-        break;
-
-      case 1:
-        DEBUGPRINT_LN(F("LOOP JOB STATE:: new job request"));
-        if(!I2C.getSlaveIsIdle(addr)) break;
-
-        if(I2C.newJobRequest(addr)) {
-          job_state = 2;  // ok to start sending data
-        }
-        else {
-          DEBUGPRINT_LN("Request to start new job failed :(");
-        }
-        break;
-
-      case 2: {
-        DEBUGPRINT_LN(F("LOOP JOB STATE:: sending data"));
-        uint8_t lastHashStr[] = "bf55bad9a75c5b375a1457b0a252d75d60abce13";
-        uint8_t eh[20] = {0xe6,0xa9,0x7a,0x92,0x27,0xad,0x70,0x21,0x9a,0x95,0x32,0x3a,0x82,0x2a,0x70,0x74,0xd8,0x13,0x24,0x8b};
-
-        if(!I2C.sendJobData(addr, lastHashStr, eh, 10)) {
-          DEBUGPRINT_LN("Sending job failed :(");
-        }
-        //I2C.testDumpData(addr);
-
-        job_state = 3;
-        break;
-
-      }
-
-      case 3:
-        if(slaveStatusTimer.shouldRun()) {
-          uint16_t nonce = 0;
-          uint8_t timeTakenMs = 0;
-          if(!I2C.getJobStatus(addr, nonce, timeTakenMs)) break;
-          else {
-            DEBUGPRINT("Job finished and nonce; ");
-            DEBUGPRINT(nonce);
-            DEBUGPRINT(" found in ");
-            DEBUGPRINT(timeTakenMs);
-            DEBUGPRINT_LN("ms");
-            job_state = 1;          // send the next
-          }
-        }
-        break;
-      default:
-        break;
-      }
-
-     delay(20);
-    }
-
+    //  delay(20);
+    // }
   }
 
   #if defined(MINE_ON_MASTER)
     masterMiner->loop();
   #endif
+
+  //slaveMiner->loop();
 
   // Small delay to keep CPU cool; adjust as needed
   delay(5);

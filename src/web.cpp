@@ -20,7 +20,7 @@ static void register_routes() {
 
   // Example JSON endpoint (adjust to your data structures)
   server.on("/api/info", HTTP_GET, [](AsyncWebServerRequest *req){
-    String json = "{\"app\":\"" APP_NAME "\",\"ver\":\"" APP_VERSION "\"}";
+    String json = "{\"app\":\"" APP_NAME_MASTER "\",\"ver\":\"" APP_VERSION "\"}";
     req->send(200, "application/json", json);
   });
 

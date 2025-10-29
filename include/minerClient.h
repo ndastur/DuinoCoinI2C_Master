@@ -3,6 +3,7 @@
 
 #include "pool.h"
 #include "I2CMaster.h"
+#include "runevery.h"
 
 #include <DSHA1.h>
 #include <Arduino.h>
@@ -10,6 +11,7 @@
 
 #define CLIENT_CONNECT_EVERY 30000
 #define AVR_WORKER_MINER "AVR I2C v4.3"
+#define MAX_SLAVES 10
 
 // --- Events ---
 enum MinerEvent : uint8_t {
@@ -41,17 +43,17 @@ typedef void (*MinerEventCallback)(MinerEvent ev, const MinerEventData& data);
 
 class MinerClient {
   public:
-    MinerClient(const String username, DeviceType deviceType);
+    MinerClient(const String username, bool isMaster);
     
     void init();
-    void setMasterMiner(bool);
-    Pool* getAttachedPool();
+    Pool* getAttachedPool(int idx = 0);
 
     // Register a generic event callback
     void onEvent(MinerEventCallback cb);
     void reset();
     void setMining(bool flag = true);
-    void setMinerName(const String& name);
+    bool setupSlaves();
+
     void loop();
     bool findNonce(const String& seed40, const String& target40, uint32_t diff, uint32_t &nonce_found, uint32_t &elapsed_time_us);
 
@@ -63,6 +65,7 @@ class MinerClient {
       DUINO_STATE_JOB_REQUEST,
       DUINO_STATE_JOB_WAIT,
       DUINO_STATE_MINING,
+      DUINO_STATE_MINING_I2C,
       DUINO_STATE_SHARE_SUBMITTED,
     };
 
@@ -72,18 +75,23 @@ class MinerClient {
     // The starting diff can be a number but also worker type (AVR | ESP32 | ESP32S (single core))
     bool _isMasterMiner = false;
 
-    Pool* _pool;
-    I2CMaster* _i2c;
-
-    // state
-    enum DUINO_STATE _state = DUINO_STATE_NONE;
-    uint32_t  _stateStartMS = 0;
+    I2CMaster* _i2c = nullptr;
+    int _numMinerClients;
+    struct ClientStruct
+    {
+      Pool* _pool = nullptr;
+      uint8_t _address;
+      uint32_t  _stateStartMS = 0;
+      enum DUINO_STATE _state = DUINO_STATE_NONE;
+      RunEvery _slaveMiningStatusTimer = RunEvery(200);
+      unsigned long _jobStartTime;
+      String seed;
+      String target;
+      uint32_t diff;
+    };
+    
+    ClientStruct _clients[MAX_SLAVES];
     bool _isMining = false;
-
-    // Mining data
-    String _seed;
-    String _target;
-    uint32_t _diff;
     DSHA1 *_dsha1;
 
     // hashrate calc
@@ -97,15 +105,14 @@ class MinerClient {
     unsigned int _accepted_count = 0;
     unsigned int _block_count = 0;
     unsigned int _last_share_count = 0;
-    unsigned long _startTime = millis();
 
     unsigned long _poolConnectTime = 0;
 
     // callback
     MinerEventCallback _cb = nullptr;
 
-    void _setState(DUINO_STATE state);
-    bool _is_state_stuck();
+    void _setState(DUINO_STATE state, int idx);
+    bool _isStateStuck(int idx);
 
     bool _max_micros_elapsed(unsigned long current, unsigned long max_elapsed);
     void _handleSystemEvents();

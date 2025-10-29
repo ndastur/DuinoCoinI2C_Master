@@ -39,7 +39,7 @@ typedef void (*PoolEventCallback)(PoolEvent ev, const PoolEventData& data);
 
 class Pool {
   public:
-    Pool(String username, String miningKey, DeviceType type, String workerId = "Auto");
+    Pool(String username, String miningKey, DeviceType type);
 
     void setup();     // connect/register with DuinoCoin pool(s)
     void loop();
@@ -51,7 +51,7 @@ class Pool {
     bool requestMOTD();
     bool requestJob();
     Job* getJob();
-    bool submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS);
+    bool submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS, String workerId = "");
 
     bool isConnected();
     void setUsername(String un);
@@ -74,6 +74,8 @@ class Pool {
     int _port = 0;
     String _username;
     String _miningKey = "None";
+    String _appName;      // the app name to send when submitting job
+
     DeviceType _type;
     String _minerName = "";
     String _workerId = "";

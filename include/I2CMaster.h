@@ -5,10 +5,17 @@
 #define I2C_SDA     21
 #define I2C_SCL     22
 #define I2C_FREQ    100000UL
+#define MAX_I2C_WORKERS 30
 
 class I2CMaster {
 public:
-    I2CMaster(int sdaPin = I2C_SDA, int sclPin = I2C_SCL, uint32_t freq = I2C_FREQ);
+    struct I2C_SLAVE {
+        uint8_t address;
+        char slaveUniqueID [(8*2)+1];
+        bool isMining;
+    };
+
+    I2CMaster(int sdaPin = I2C_SDA, int sclPin = I2C_SCL, uint32_t freq = I2C_FREQ, bool doBegin = true);
 
     // Must be called from setup and only once
     void begin();
@@ -16,8 +23,11 @@ public:
     // Set the timeout in ms
     void setTimeout(uint16_t timeout);
 
-    /// Scan bus, print results to Serial
-    void scan(bool printToSerial = false);
+    /// Scan bus, get the unique IDs of the devices
+    void scan(bool getIds = false);
+
+    /// Dump slave info to serial
+    void dumpSlaves();
 
     /// Check if a device ACKs its address
     bool probe(uint8_t address);
@@ -26,22 +36,19 @@ public:
     uint8_t getFoundSlaveCount();
 
     /// get address of slave at index idx
-    uint8_t getFoundSlave(uint8_t idx);
+    I2C_SLAVE *getFoundSlave(uint8_t idx);
 
-    /// Send ping command (expects one-byte response, default 0xAA)
-    bool ping(uint8_t address, uint8_t expectedResponse = 0xAA);
+    /// get address of slave at index idx
+    uint8_t getFoundSlaveAddress(uint8_t idx);
 
     /// Get the version on the slave
     bool version(uint8_t address, uint8_t &ver_major, uint8_t &ver_minor);
 
-    /// Request a 32-bit unsigned metric (e.g. heap) from slave
-    bool queryHeap(uint8_t address, uint32_t &outHeapBytes);
-
     // Request uptime (ms) as 32-bit
     bool queryUptime(uint8_t address, uint32_t &outMillis);
 
-    // Request chip signature (3 bytes)
-    bool queryChipId(uint8_t address, uint8_t sig[3]);
+    // Request chip signature (8 bytes)
+    bool queryUniqueId(uint8_t address, uint8_t id[8]);
 
 #if defined(TEST_FUNCS)
     /// Test sending different bytes lengths
@@ -50,10 +57,10 @@ public:
 #endif
 
     /// Check if the slave is in a state to receive a new job
-    bool newJobRequest(uint8_t address);
+    bool sendDataBegin(uint8_t address);
 
     /// Send job data
-    bool sendJobData(uint8_t address, const uint8_t *previousHashStr, const uint8_t *expectedHash, uint8_t difficulty);
+    bool sendJobData(uint8_t address, const char *previousHashStr, const char *expectedHash, uint8_t difficulty);
 
     /// Send data
     bool sendData(uint8_t address, const uint8_t *data, const uint8_t len, const uint8_t startSeq = 0);
@@ -73,15 +80,14 @@ private:
     static constexpr uint16_t _scanDelayMs = 5;
 
     uint8_t _slaveCount = 0;
-    uint8_t _slaves[127];
+    I2C_SLAVE _slaves[MAX_I2C_WORKERS];
+
+    // uint8_t _slaves[MAX_I2C_WORKERS];
+    // char _slaveUniqueIDs [MAX_I2C_WORKERS][(8*2)+1];
 
     // Protocol command IDs
-    static constexpr uint8_t CMD_PING       = 0x01;
     static constexpr uint8_t CMD_VERSION    = 0x02;
-    static constexpr uint8_t CMD_GET_HEAP   = 0x05;
     static constexpr uint8_t CMD_GET_UPTIME = 0x06;
-    static constexpr uint8_t CMD_GET_CHIP   = 0x07;
-    static constexpr uint8_t CMD_ECHO       = 0x10;
 
     static constexpr uint8_t CMD_BEGIN_DATA   = 0x20;
     static constexpr uint8_t CMD_SEND_DATA    = 0x22;
@@ -90,6 +96,7 @@ private:
     static constexpr uint8_t CMD_GET_IS_IDLE    = 0x30;
     static constexpr uint8_t CMD_GET_JOB_STATUS = 0x32;
     static constexpr uint8_t CMD_GET_JOB_DATA   = 0x35;
+    static constexpr uint8_t CMD_GET_UNIQUEID   = 0x40;
 
     static constexpr uint8_t CMD_TEST_SEND  = 0x90;
     static constexpr uint8_t CMD_TEST_DUMP_DATA  = 0x92;

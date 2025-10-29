@@ -1,5 +1,8 @@
-#include "I2CMaster.h"
 #include "config.h"
+#include "utils.h"
+#include "I2CMaster.h"
+
+//#define DEBUG_FULL 1
 
 static inline uint8_t crc8_maxim(const uint8_t* data, size_t len, uint8_t crc = 0x00) {
   for (size_t i = 0; i < len; ++i) {
@@ -19,10 +22,20 @@ static inline uint8_t crc8_maxim(const uint8_t data, size_t len, uint8_t crc = 0
     return crc8_maxim(dataArray, len, crc);
 }
 
-I2CMaster::I2CMaster(int sdaPin, int sclPin, uint32_t freq)
-    : _sdaPin(sdaPin), _sclPin(sclPin), _freq(freq) {}
+I2CMaster::I2CMaster(int sdaPin, int sclPin, uint32_t freq, bool doBegin)
+    : _sdaPin(sdaPin), _sclPin(sclPin), _freq(freq) {
+        begin();
+    }
 
 void I2CMaster::begin() {
+    DEBUGPRINT("[I2C] Starting wire with pins. SDA: ");
+    DEBUGPRINT(_sdaPin);
+    DEBUGPRINT(" SCL: ");
+    DEBUGPRINT(_sclPin);
+    DEBUGPRINT(" Freq: ");
+    DEBUGPRINT(_freq);
+    DEBUGPRINT_LN();
+
     Wire.begin(_sdaPin, _sclPin, _freq);
     delay(50);
     Wire.setTimeOut(300);
@@ -47,41 +60,59 @@ uint8_t I2CMaster::getFoundSlaveCount() {
     return _slaveCount;
 }
 
-uint8_t I2CMaster::getFoundSlave(uint8_t idx) {
-    return (idx > _slaveCount) ? 0 : _slaves[idx];
+I2CMaster::I2C_SLAVE* I2CMaster::getFoundSlave(uint8_t idx) {
+    return (idx > _slaveCount) ? 0 : &_slaves[idx];    
 }
 
-void I2CMaster::scan(bool printToSerial) {
+uint8_t I2CMaster::getFoundSlaveAddress(uint8_t idx) {
+    return (idx > _slaveCount) ? 0 : _slaves[idx].address;
+}
+
+void I2CMaster::scan(bool getIds) {
     _slaveCount = 0;
     memset(_slaves, 0, sizeof(_slaves));
 
-    if(printToSerial) SERIALPRINT_LN("I2C scan:");
     bool found = false;
     for (uint8_t addr = 1; addr < 127; ++addr) {
         if (probe(addr)) {
-            _slaves[_slaveCount++] = addr;
-            if(printToSerial) {
-                char strBuf[80];
-                snprintf(strBuf, sizeof(strBuf), "  -> Device at 0x%02X (%d)", addr, addr);
-                DEBUGPRINT_LN(strBuf);
-            }
+            _slaves[_slaveCount++].address = addr;
             found = true;
         }
     }
-    if (!found) DEBUGPRINT_LN("  No devices found.");
+
+    // Do this in it's own loop so slaves get saved
+    if(getIds) {
+        for(int i=0; i < _slaveCount; i++) {
+            uint8_t resp[8];
+            if(!_sendCmd(_slaves[i].address, CMD_GET_UNIQUEID))
+                continue;
+            if(!_getResponse(_slaves[i].address, 8, resp))
+                continue;
+            DEBUGPRINT("Unique ID: ");
+            for(int x=0;x<8;x++) {
+                byte b1=resp[x] >> 4;
+                byte b2=resp[x] & 0x0f;
+                b1+='0'; if (b1>'9') b1 += 7;  // gap between '9' and 'A'
+                b2+='0'; if (b2>'9') b2 += 7;
+                _slaves[i].slaveUniqueID[x*2] = b1;
+                _slaves[i].slaveUniqueID[(x*2)+1] = b2;
+            }
+            _slaves[i].slaveUniqueID[(8*2)] = 0;
+        }
+    }
+
+    if (!found) DEBUGPRINT_LN("[I2C] Scan - no devices found.");
 }
 
-bool I2CMaster::ping(uint8_t address, uint8_t expectedResponse) {
-    if(!_sendCmd(address, CMD_PING)) return false;
-
-    uint32_t start = millis();
-    while (millis() - start < _timeout) {
-        if (Wire.requestFrom((int)address, 1) == 1) {
-            return (Wire.read() == expectedResponse);
-        }
-        delay(5);
+void I2CMaster::dumpSlaves() {
+    SERIALPRINT_LN("I2C device list:");
+    for(int i=0; i < _slaveCount; i++) {
+        SERIALPRINT("  -> device @ 0x");
+        SERIALPRINT_HEX(_slaves[i].address);
+        SERIALPRINT(" uniq id: ");
+        SERIALPRINT(_slaves[i].slaveUniqueID);
+        SERIALPRINT_LN();
     }
-    return false;
 }
 
 bool I2CMaster::version(uint8_t address, uint8_t &ver_major, uint8_t &ver_minor) {
@@ -92,25 +123,6 @@ bool I2CMaster::version(uint8_t address, uint8_t &ver_major, uint8_t &ver_minor)
         if (Wire.requestFrom((int)address, 1) == 1) {
             ver_major = (uint8_t)Wire.read();
             ver_minor = (uint8_t)Wire.read();
-        }
-        delay(5);
-    }
-    return false;
-}
-
-bool I2CMaster::queryHeap(uint8_t address, uint32_t &outHeapBytes) {
-    if(!_sendCmd(address, CMD_GET_HEAP)) return false;
-
-    uint32_t start = millis();
-    while (millis() - start < _timeout) {
-        if (Wire.requestFrom((int)address, 4) == 4) {
-            uint32_t v = 0;
-            v |= (uint32_t)Wire.read();
-            v |= (uint32_t)Wire.read() << 8;
-            v |= (uint32_t)Wire.read() << 16;
-            v |= (uint32_t)Wire.read() << 24;
-            outHeapBytes = v;
-            return true;
         }
         delay(5);
     }
@@ -134,21 +146,12 @@ bool I2CMaster::queryUptime(uint8_t address, uint32_t &outMillis) {
     return false;
 }
 
-bool I2CMaster::queryChipId(uint8_t address, uint8_t sig[3]) {
-    if(!_sendCmd(address, CMD_GET_CHIP)) return false;
+bool I2CMaster::queryUniqueId(uint8_t address, uint8_t id[8]) {
+    if(!_sendCmd(address, CMD_GET_UNIQUEID)) return false;
 
-    uint32_t start = millis();
-    while (millis() - start < _timeout) {
-        if (Wire.requestFrom((int)address, 3) == 3) {
-            sig[0] = Wire.read(); // manufacturer
-            sig[1] = Wire.read(); // family
-            sig[2] = Wire.read(); // device
-            return true;
-        }
-        delay(5);
-    }
-    return false;
+    return _getResponse(address, 8, id);
 }
+
 
 #if defined(TEST_FUNCS)
 bool I2CMaster::testSend(uint8_t address, uint8_t bytesToSend) {
@@ -188,8 +191,7 @@ bool I2CMaster::testDumpData(uint8_t address) {
 
 #endif
 
-bool I2CMaster::newJobRequest(uint8_t address) {
-    // if(!_sendCmd(address, CMD_NEW_JOB)) return false;
+bool I2CMaster::sendDataBegin(uint8_t address) {
     if(!_sendCmd(address, CMD_BEGIN_DATA)) return false;
 
     uint8_t data[1];
@@ -197,16 +199,24 @@ bool I2CMaster::newJobRequest(uint8_t address) {
         return false;
     }
 
-    char str[64];
-    sprintf(str, "Return status from device addr: 0x%.2X = 0x%.2X",address, data[0]);
-    DEBUGPRINT_LN( str );
+    DEBUGPRINT("[I2C] sendDataBegin Ret status. Addr: 0x");
+    DEBUGPRINT_HEX(address);
+    DEBUGPRINT(" Status: 0x");
+    DEBUGPRINT_HEX(data[0]);
+    DEBUGPRINT_LN();
 
     return (data[0] == 0xAA);
 }
 
 bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len, const uint8_t startSeq) {
     // TODO add timeout
-    DEBUGPRINT_LN( "[I2C] sendData(...)" );
+    #if defined(DEBUG_FULL)
+        DEBUGPRINT( "[I2C] sendData() to 0x" );
+        DEBUGPRINT_HEX(address);
+        DEBUGPRINT(" len: ");
+        DEBUGPRINT(len);
+        DEBUGPRINT_LN();
+    #endif
 
     uint8_t i = 0;
     uint8_t dataBuf[2];
@@ -228,7 +238,7 @@ bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len
         uint8_t respBuf[3];
         if(!_getResponse(address, 3, respBuf)) {
             DEBUGPRINT_LN(respBuf[1]);
-            if(sendRespRetry++ < 3) {
+            if(sendRespRetry++ < 2) {
                 continue;       // try again
             }
             else {
@@ -242,9 +252,11 @@ bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len
             continue;
         }
         else {
-            DEBUGPRINT("   Error response from send data: ");
+            DEBUGPRINT("   Error response from send data: 0x");
+            DEBUGPRINT_HEX(respBuf[0]);
+            DEBUGPRINT(" ");
             DEBUGPRINT_LN(respBuf[0]);
-            if(loopRetry++ < 3) {
+            if(loopRetry++ < 2) {
                 continue;
             }
             else {
@@ -258,18 +270,30 @@ bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len
 
 /// @brief Send the job data to the slave
 /// The packet frame is: [CMD|SOF][LEN][SEQ][PAYLOAD ...][CRC8] max 16 bytes inc cmd bytes
-bool I2CMaster::sendJobData(uint8_t address, const uint8_t *previousHashStr,
-    const uint8_t *expectedHash, uint8_t difficulty) {
+bool I2CMaster::sendJobData(uint8_t address, const char *previousHashStr,
+    const char *expectedHashStr, uint8_t difficulty) {
 
+    if(!sendDataBegin(address)) {
+        SERIALPRINT_LN("[I2C] error from send data begin check.");
+        return false;
+    }
+
+    DEBUGPRINT("[I2C] sending job to 0x");
+    DEBUGPRINT_HEX(address);
+    DEBUGPRINT_LN();
+    
     uint8_t resp[4];    // max response size
+    String ehString = String(expectedHashStr);
+    uint8_t expectedHash[20];
+    hexStringToUint8Array(ehString, expectedHash ,20);
 
-    if( !sendData(address, previousHashStr, 41) ) return false;
+    if( !sendData(address, (const uint8_t*)previousHashStr, 41) ) return false;
     if( !sendData(address, expectedHash, 20, 41) ) return false;
     uint8_t diff[1];
     diff[0] = difficulty;
     if( !sendData(address, diff, 1, 61) ) return false;
 
-    u_int8_t crc8[1] = { crc8_maxim(previousHashStr, 41) };
+    u_int8_t crc8[1] = { crc8_maxim((const uint8_t*)previousHashStr, 41) };
     crc8[0] = crc8_maxim(expectedHash, 20, crc8[0]);
     crc8[0] = crc8_maxim(difficulty, 1, crc8[0]);
 
@@ -306,6 +330,11 @@ bool I2CMaster::getJobStatus(uint8_t address, uint16_t &foundNonce, uint8_t &tim
         foundNonce = (uint16_t)resp[1];
         foundNonce |= (uint16_t)resp[2] << 8;
         timeTakenMs = resp[3];
+
+        DEBUGPRINT("[I2C] Job Status True: \n   - Nonce: ");
+        DEBUGPRINT(foundNonce);
+        DEBUGPRINT("\n   - Time: ");
+        DEBUGPRINT_LN(timeTakenMs);
         return true;
     }
 
@@ -320,20 +349,20 @@ bool I2CMaster::_sendCmd(uint8_t address, const uint8_t cmd, const uint8_t data[
     Wire.write(cmd);
     if(len > 0) Wire.write(data, len);
     
-    char hex[4];
-    DEBUGPRINT("[I2C] Sending cmd: 0x");
-    sprintf(hex, "%.2X ", cmd);
-    DEBUGPRINT(hex);
-    #if defined(DEBUG_PRINT)
+    #if defined DEBUG_FULL
+      DEBUGPRINT("[I2C] Sending cmd: 0x");
+      DEBUGPRINT_HEX(cmd);
+    #endif
+
+    #if defined(DEBUG_FULL)
     if(len > 0) {
         DEBUGPRINT(" Data: ");
         for(int c=0;c<len;c++) {
-        sprintf(hex, "%.2X ", data[c]);
-        DEBUGPRINT( hex );
+        DEBUGPRINT_HEX( data[c] );
         }
     }
-    #endif
     DEBUGPRINT_LN(" | END");
+    #endif
 
 
     // if(len > 0) {
@@ -370,12 +399,21 @@ bool I2CMaster::_getResponse(uint8_t address, uint8_t respLength, uint8_t data[]
             if (!Wire.available()) {
                 break; // unexpected; fall through to retry
             }
-            DEBUGPRINT("[I2C] Got response data: ");
+            
+            #if defined DEBUG_FULL
+                DEBUGPRINT("[I2C] Got response data: ");
+            #endif
             for (uint8_t c = 0; c < respLength; c++) {
                 data[c] = Wire.read();
-                DEBUGPRINT_HEX( data[c] );
-            }            
-            DEBUGPRINT_LN(" | END");
+                #if defined DEBUG_FULL
+                    DEBUGPRINT_HEX( data[c] );
+                #endif
+            }
+            #if defined DEBUG_FULL
+                DEBUGPRINT_LN(" | END");
+            #endif
+            
+            while(Wire.available()) Wire.read();    // flush
             return true;
         }
         delay(5);

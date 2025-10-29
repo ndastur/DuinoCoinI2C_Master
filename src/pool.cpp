@@ -24,19 +24,21 @@
 const char * urlPool = "https://server.duinocoin.com/getPool";
 const char * urlMiningKeyStatus = "https://server.duinocoin.com/mining_key";
 
-Pool::Pool(String username, String miningKey, DeviceType type, String workerId) {
+Pool::Pool(String username, String miningKey, DeviceType type) {
   _username = username;
   _miningKey = miningKey;
   _type = type;
-  setWorkerId(workerId);
+  _workerId = String(getChipId());  // default
 
   switch (type) {
     case DEVICE_SLAVE:
     case DEVICE_AVR:
       _startingDifficulty = AVR_WORKER_JOB;
+      _appName = String(APP_NAME_SLAVE) + String(APP_VERSION);
       break;
     case DEVICE_ESP32:
       _startingDifficulty = ESP_WORKER_JOB;
+  _appName = String(APP_NAME_MASTER) + String(APP_VERSION);
       break;
     default:
       DEBUGPRINT_LN("[POOL] ctor no device type specified");
@@ -61,7 +63,7 @@ void Pool::setMinerName(String minerName) {
 }
 
 void Pool::setWorkerId(String workerId) {
-  _workerId = workerId.isEmpty() || workerId == "Auto" ? String("DUCOID") + String(getChipId()) : workerId;
+  _workerId = workerId.isEmpty() || workerId == "Auto" ? String(getChipId()) : workerId;
   DEBUGPRINT_LN("[POOL] setting worker id; " + _workerId);
 }
 
@@ -223,7 +225,7 @@ bool Pool::requestMOTD() {
 // Request a job from the Pool
 bool Pool::requestJob() {
   if(_state != POOL_STATE_IDLE) {
-    Serial.println("request job State not idle ...");
+    DEBUGPRINT_LN("[POOL] request for job. Pool state not idle ...");
     return false;
   }
   if(!connect()) return false;
@@ -239,7 +241,9 @@ bool Pool::requestJob() {
     + SEP_TOKEN + _startingDifficulty
     + SEP_TOKEN + MINING_KEY;
   
-  Serial.println(line);  
+  DEBUGPRINT("[POOL] req job with: ");
+  DEBUGPRINT_LN(line);
+    
   bool ret = _sendLine(line);
 
   if(ret) {
@@ -252,21 +256,20 @@ Job* Pool::getJob() {
   return _poolJob.difficulty == 0 ? nullptr : &_poolJob;
 }
 
-bool Pool::submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS) {
+bool Pool::submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS, String workerId) {
+  String wrkId = workerId.isEmpty() ? _workerId : workerId;
   String submit = String(foundNonce)
                 + SEP_TOKEN + String(foundNonce / (elapsedTimeUS * 0.000001f))
-                + SEP_TOKEN + APP_NAME + " " + APP_VERSION
+                + SEP_TOKEN + _appName
                 + SEP_TOKEN + _minerName
-                + SEP_TOKEN +  String("DUCOID") + String(getChipId())
-                //+ SEP_TOKEN + String("2785")
+                + SEP_TOKEN + String("DUCOID") + wrkId
                 //+ SEP_TOKEN + String(WALLET_GRP_ID) // Might need the wallet ID for grouping String(random(0, 2811)); // Needed for miner grouping in the wallet in the official
-                //+ END_TOKEN
                 ;
 
   DEBUGPRINT("[POOL] Submit: ");
   DEBUGPRINT_LN(submit);
 
-  bool ret = _sendLine(submit);
+  bool ret = _sendLine(submit);       //+ END_TOKEN added by _sendline
   if(ret) {
     _setState(POOL_STATE_SUBMITTED);
     return false;
