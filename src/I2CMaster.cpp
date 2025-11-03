@@ -230,7 +230,6 @@ bool I2CMaster::sendData(uint8_t address, const uint8_t *data, const uint8_t len
 }
 
 /// @brief Send the job data to the slave
-/// The packet frame is: [CMD|SOF][LEN][SEQ][PAYLOAD ...][CRC8] max 16 bytes inc cmd bytes
 bool I2CMaster::sendJobData(uint8_t address, const char *previousHashStr,
     const char *expectedHashStr, uint8_t difficulty) {
 
@@ -244,19 +243,17 @@ bool I2CMaster::sendJobData(uint8_t address, const char *previousHashStr,
     DEBUGPRINT_LN();
 
     uint8_t resp[4];    // max response size
-    String ehString = String(expectedHashStr);
-    uint8_t expectedHash[20];
-    hexStringToUint8Array(ehString, expectedHash ,20);
 
-    if( !sendData(address, (const uint8_t*)previousHashStr, 41) ) return false;
-    if( !sendData(address, expectedHash, 20, 41) ) return false;
-    uint8_t diff[1];
-    diff[0] = difficulty;
-    if( !sendData(address, diff, 1, 61) ) return false;
+    // ----------------------------------
+    // Make a packet array to send
+    // ----------------------------------
+    uint8_t job_packet[41+20+1];
+    memcpy(job_packet, previousHashStr, 41);    // null ending prev hash string
+    hexStringToUint8Array(expectedHashStr, &job_packet[41] ,20);  // convert to byte array directly into the packet
+    job_packet[41+20] = difficulty;
+    if( !sendData(address, job_packet, 41+20+1) ) return false;
 
-    u_int8_t crc8[1] = { crc8_maxim((const uint8_t*)previousHashStr, 41) };
-    crc8[0] = crc8_maxim(expectedHash, 20, crc8[0]);
-    crc8[0] = crc8_maxim(difficulty, 1, crc8[0]);
+    u_int8_t crc8[1] = { crc8_maxim(job_packet, 41+20+1) };
 
     delay(2); // Give slave a chance to load data and process a CRC on device
     if( !_sendCmd(address, CMD_END_DATA, crc8, 1) ) return false;
@@ -272,14 +269,6 @@ bool I2CMaster::sendJobData(uint8_t address, const char *previousHashStr,
         return false;
     }
     return true;
-}
-
-bool I2CMaster::getSlaveIsIdle(uint8_t address) {
-    if(!_sendCmd(address, CMD_GET_IS_IDLE)) return false;
-
-    uint8_t resp[1];
-    if(!_getResponse(address, 1, resp)) return false;
-    return ( resp[0] == 0xAA ) ? true : false;
 }
 
 bool I2CMaster::getJobStatus(uint8_t address) {

@@ -61,8 +61,6 @@ public:
     /// Send data
     bool sendData(uint8_t address, const uint8_t *data, const uint8_t len, const uint8_t startSeq = 0);
 
-    bool getSlaveIsIdle(uint8_t address);
-
     // Get the status of the job. Minimal I2C
     bool getJobStatus(uint8_t address);
 
@@ -89,7 +87,6 @@ private:
     static constexpr uint8_t CMD_SEND_DATA    = 0x22;
     static constexpr uint8_t CMD_END_DATA     = 0x24;
 
-    static constexpr uint8_t CMD_GET_IS_IDLE    = 0x30;
     static constexpr uint8_t CMD_GET_JOB_STATUS = 0x32;
     static constexpr uint8_t CMD_GET_JOB_RESULT = 0x33;
 
