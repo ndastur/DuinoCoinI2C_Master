@@ -87,15 +87,26 @@ bool MinerClient::setupSlaves() {
     _i2c->dumpSlaves();
     // setup a client for each slave as each one needs it's own pool connection etc
     for(uint8_t c = 0; c < _numMinerClients; c++) {
-      _clients[c]._pool = new Pool(_username, MINING_KEY, DEVICE_AVR);
-      _clients[c]._address = _i2c->getFoundSlaveAddress(c);
-      _clients[c]._pool->setMinerName(String("AVRSlave") + String(_clients[c]._address, HEX));
+      auto& client = _clients[c];
+      client._pool = new Pool(_username, MINING_KEY, DEVICE_AVR);
+      client._address = _i2c->getFoundSlaveAddress(c);
+      client._pool->setMinerName(String("AVRSlave") + String(_clients[c]._address, HEX));
+      client._pool->addEventListener(&MinerClient::_poolEventSink, &_clients[c] );
+      client.startTimeMs = millis();  // TODO take into account connect to pool time
+
+      // Delay a bit between slave by a jitter amount
+      delay(48);
+      if(c%2) delay(16);
     }
   }
   return true;
 }
 
 void MinerClient::loop() {
+  if(_reportTimer.shouldRun()) {
+    _printReport();
+  }
+
   for(u_int8_t c = 0; c < _numMinerClients; c++) {
     auto& client = _clients[c];
 
@@ -171,27 +182,27 @@ void MinerClient::loop() {
         // test if job solved
         if(client.slaveMiningStatusTimer.shouldRun()) {
           uint16_t found_nonce;
-          uint8_t timeTaken;
-          if(_i2c->getJobStatus(_clients[c]._address, found_nonce, timeTaken)) {
+          uint16_t timeTaken;
+          if(_i2c->getJobResult(_clients[c]._address, found_nonce, timeTaken)) {
             if(found_nonce == 0) {
               // although work finished, error. Probably start diff too high
               _setState(DUINO_STATE_NONE, c); // stop while we test
               break;
             }
-            uint16_t masterTimeTaken = millis() - client._jobStartTime;
+            uint16_t masterTimeTakenMs = millis() - client._jobStartTime;
             DEBUGPRINT("[MINER_CLIENT] i2c slave solved hash in ");
             DEBUGPRINT(timeTaken);
             DEBUGPRINT("ms. Master Estimate: ");
-            DEBUGPRINT_LN(masterTimeTaken);
+            DEBUGPRINT_LN(masterTimeTakenMs);
 
             // Update stats
             client.stats_share_count++;
+            client.lastNonce = found_nonce;
+            client.lastTimeTakenMs = masterTimeTakenMs;
+            client.lastHashRate = found_nonce / (masterTimeTakenMs * 0.001f);
 
-            client._pool->submitJob(found_nonce, masterTimeTaken*1000);
+            client._pool->submitJob(found_nonce, masterTimeTakenMs * 1000);
 
-            // Reset the slave ready to receive data, also doesn't then respond as data available
-            _i2c->sendDataBegin(_clients[c]._address);
-            blinkStatus(BLINK_SHARE_GOOD);
             _setState(DUINO_STATE_JOB_REQUEST, c);  // start again
           }
         }
@@ -265,14 +276,112 @@ bool MinerClient::_isStateStuck(int idx) {
   return (millis() - _clients[idx]._stateStartMS > STATE_STUCK_TIMEOUT) ? true : false;
 }
 
+void static _printMinerPrefix(uint16_t address, bool isDebug) {
+  if(isDebug) {
+    DEBUGPRINT("[MINER CLIENT] 0x");
+    DEBUGPRINT_HEX(address);
+    DEBUGPRINT(" - ");
+  }
+  else {
+    SERIALPRINT("[MINER CLIENT] 0x");
+    SERIALPRINT_HEX(address);
+    SERIALPRINT(" - ");
+  }
+}
+
+void MinerClient::_poolEventSink(PoolEvent ev, const PoolEventData& d, void *user) {
+  ClientStruct* client = static_cast<ClientStruct*>(user);
+
+  switch (ev)
+  {
+  case POOLEVT_CONNECTED:
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("POOLEVT_CONNECTED");
+    DEBUGPRINT_LN(d.text);
+    break;
+  case POOLEVT_DISCONNECTED:     // payload: text = reason
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("POOLEVT_DISCONNECTED");
+    break;
+  case POOLEVT_MOTD:             // payload: text = motd
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("POOLEVT_MOTD");
+    DEBUGPRINT_LN(d.text);
+    break;
+  case POOLEVT_JOB_REQUESTED:
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("POOLEVT_REQUESTED");
+    break;
+  case POOLEVT_JOB_RECEIVED:     // payload: seed40 / target40 / diff
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("POOLEVT_JOB_RECEIVED - ");
+    DEBUGPRINT(d.jobDataPtr->prevHash);
+    DEBUGPRINT(" | ");
+    DEBUGPRINT(d.jobDataPtr->expectedHash);
+    DEBUGPRINT(" | ");
+    DEBUGPRINT_LN(d.jobDataPtr->difficulty);
+    break;
+  case POOLEVT_RESULT_GOOD:
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("Share accepted");
+    client->stats_good_count++;
+    if(client->_address == 0) {
+      blinkStatus(BLINK_SHARE_GOOD);
+    }
+    else {
+      blinkStatus(BLINK_SLAVE_SHARE_GOOD);
+    }
+    break;
+  case POOLEVT_RESULT_BAD:
+    _printMinerPrefix(client->_address, false);
+    SERIALPRINT("Share rejected: ");
+    SERIALPRINT(d.text ? d.text : "");
+    SERIALPRINT("  Diff: ");
+    SERIALPRINT(client->diff);
+    SERIALPRINT("  Last Nonce: ");
+    SERIALPRINT(client->lastNonce);
+    SERIALPRINT(".  Time: ");
+    SERIALPRINT( client->lastTimeTakenMs );
+    SERIALPRINT("ms");
+    SERIALPRINT("  HR: ");
+    SERIALPRINT(client->lastHashRate);
+    //SERIALPRINT( client->lastNonce / (client->lastTimeTakenMs * 0.001f) );
+    SERIALPRINT_LN("");
+
+    client->stats_bad_count++;
+    if( client->lastHashRate > client->highestHashWithError)
+      client->highestHashWithError = client->lastHashRate;
+    if( client->lastHashRate < client->lowestHashWithError)
+      client->lowestHashWithError = client->lastHashRate;
+
+    blinkStatus(BLINK_SHARE_ERROR);
+    break;
+  case POOLEVT_RESULT_BLOCK:
+    _printMinerPrefix(client->_address, true);
+    DEBUGPRINT_LN("Found a BLOCK ... Whoa!");
+    client->stats_block_count++;
+    blinkStatus(BLINK_SHARE_BLOCKFOUND);
+    break;
+  case POOLEVT_ERROR:
+    _printMinerPrefix(client->_address, false);
+    SERIALPRINT("POOLEVT_ERROR: ");
+    SERIALPRINT_LN(d.text);
+    break;
+
+  default:
+    break;
+  }
+
+}
+
 bool MinerClient::_solveAndSubmit(const char *seed40, const char *target40, uint32_t diff) {
   uint32_t found_nonce = 0;
   uint32_t elapsed_time = 0;
 
   if( this->findNonce(seed40, target40, diff, found_nonce, elapsed_time) ) {
     float elapsed_time_s = elapsed_time * .000001f;
-    _last_hashed_per_sec = (found_nonce / elapsed_time_s) * 1;
-    _last_hashrate_khs = _last_hashed_per_sec / 1000.0f;
+    _masterLastHashedPerSec = (found_nonce / elapsed_time_s) * 1;
+    _masterLastHashrateKhs = _masterLastHashedPerSec / 1000.0f;
   }
   else {
     _emit_nodata(ME_SOLVE_FAILED);
@@ -281,7 +390,7 @@ bool MinerClient::_solveAndSubmit(const char *seed40, const char *target40, uint
 
   MinerEventData solved;
   solved.nonce = found_nonce;
-  solved.hashrate_khs = _last_hashrate_khs;
+  solved.hashrate_khs = _masterLastHashrateKhs;
   _emit(ME_SOLVED, solved);
 
   return _clients[0]._pool->submitJob(found_nonce, elapsed_time);
@@ -302,4 +411,55 @@ void MinerClient::_handleSystemEvents() {
   yield();
 
   // TODO: implement when / if OTA implemented ArduinoOTA.handle();
+}
+
+void MinerClient::_printReport() {
+  char buf[64];
+  u_int32_t
+    total_share_count=0,
+    total_good_count=0,
+    total_bad_count=0,
+    total_block_count=0;
+
+  SERIALPRINT_LN(F("************ REPORT ************"));
+  SERIALPRINT("FreeRam: ");
+  SERIALPRINT_LN(ESP.getFreeHeap());
+
+  SERIALPRINT_LN(F("Addr     Count     Good      Bad  Block   Uptime  Shrs/min"));
+  for(int c=0; c < _numMinerClients; c++) {
+    auto const client = _clients[c];
+
+    total_share_count += client.stats_share_count;
+    total_good_count += client.stats_good_count;
+    total_bad_count += client.stats_bad_count;
+    total_block_count += client.stats_block_count;
+
+    uint32_t uptimeSecs = (millis() - client.startTimeMs) / 1000;
+    float sharesPerMin = (float)client.stats_good_count / ((uptimeSecs<1) ? 1 : (uptimeSecs / 60));
+
+    snprintf(buf, 64, "%#x  %8u %8u %8u %6u %5u:%02d %7.3f",
+    client._address,
+    client.stats_share_count,
+    client.stats_good_count,
+    client.stats_bad_count,
+    client.stats_block_count,
+    uptimeSecs/60,
+    uptimeSecs%60,
+    sharesPerMin
+    );
+    SERIALPRINT_LN(buf);
+
+    // SERIALPRINT("Highest / Lowest Error hash rates...   ");
+    // SERIALPRINT("Highest: ");
+    // SERIALPRINT(client.highestHashWithError);
+    // SERIALPRINT("  Lowest: ");
+    // SERIALPRINT_LN(client.lowestHashWithError);
+  }
+
+  snprintf(buf, 64, "Total %8u %8u %8u %6u",
+    total_share_count, total_good_count,
+    total_bad_count, total_block_count);
+  SERIALPRINT_LN(buf);
+
+  SERIALPRINT_LN("");
 }

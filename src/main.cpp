@@ -14,16 +14,12 @@
 #define REPORT_INTERVAL 60000
 #define REPEATED_WIRE_SEND_COUNT 1      // 1 for AVR, 8 for RP2040
 
-RunEvery reportTimer(REPORT_INTERVAL);
-RunEvery scanTimer(50000);
-
 #if defined(MINE_ON_MASTER)
   MinerClient *masterMiner;
 #endif
 MinerClient *slaveMiner;
 
 void restart_esp(String msg);
-void poolEventSink(PoolEvent ev, const PoolEventData& d);
 
 void restart_esp(String msg) {
   DEBUGPRINT_LN(msg);
@@ -36,55 +32,6 @@ void restart_esp(String msg) {
   #endif
 }
 
-void poolEventSink(PoolEvent ev, const PoolEventData& d) {
-  switch (ev)
-  {
-  case POOLEVT_CONNECTED:
-    DEBUGPRINT_LN("[MAIN] POOLEVT_CONNECTED");
-    DEBUGPRINT_LN(d.text);
-    break;
-  case POOLEVT_DISCONNECTED:     // payload: text = reason
-    DEBUGPRINT_LN("[MAIN] POOLEVT_DISCONNECTED");
-    break;
-  case POOLEVT_MOTD:             // payload: text = motd
-    DEBUGPRINT_LN("[MAIN] POOLEVT_MOTD");
-    DEBUGPRINT_LN(d.text);
-    break;
-  case POOLEVT_JOB_REQUESTED:
-    DEBUGPRINT_LN("[MAIN] POOLEVT_REQUESTED");
-    break;
-  case POOLEVT_JOB_RECEIVED:     // payload: seed40 / target40 / diff
-    DEBUGPRINT_LN("[MAIN] POOLEVT_JOB_RECEIVED");
-    DEBUGPRINT("  prevHash: ");
-    DEBUGPRINT_LN(d.jobDataPtr->prevHash);
-    DEBUGPRINT("  exptHash: ");
-    DEBUGPRINT_LN(d.jobDataPtr->expectedHash);
-    DEBUGPRINT("      Diff: ");
-    DEBUGPRINT_LN(d.jobDataPtr->difficulty);
-    break;
-  case POOLEVT_RESULT_GOOD:
-    DEBUGPRINT_LN("[DUCO] Share accepted");
-    blinkStatus(BLINK_SHARE_GOOD);
-    break;
-  case POOLEVT_RESULT_BAD:
-    DEBUGPRINT("[DUCO] Share rejected: ");
-    DEBUGPRINT_LN(d.text ? d.text : "");
-    blinkStatus(BLINK_SHARE_ERROR);
-    break;
-  case POOLEVT_RESULT_BLOCK:
-    DEBUGPRINT_LN("[DUCO] Found a BLOCK ... Whoa!");
-    blinkStatus(BLINK_SHARE_BLOCKFOUND);
-    break;
-  case POOLEVT_ERROR:
-    DEBUGPRINT("[MAIN] POOLEVT_ERROR: ");
-    DEBUGPRINT_LN(d.text);
-    break;
-
-  default:
-    break;
-  }
-}
-
 // Example: bridge events to your I2C master, WS, or Serial
 void minerEventSink(MinerEvent ev, const MinerEventData& d) {
   switch (ev) {
@@ -94,7 +41,6 @@ void minerEventSink(MinerEvent ev, const MinerEventData& d) {
       DEBUGPRINT(", HR=");
       DEBUGPRINT(d.hashrate_khs);
       DEBUGPRINT(" kH/s\n");
-      blinkStatus(BLINK_SHARE_SOLVED);
       break;
     case ME_SOLVE_FAILED:
       DEBUGPRINT_LN("[DUCO] Failed to solve hash.\n");
@@ -108,11 +54,8 @@ void minerEventSink(MinerEvent ev, const MinerEventData& d) {
   }
 }
 
-uint8_t testSendBytes = 0;
-
 // SETUP
 void setup() {
-
   Serial.begin(115200);
   while(!Serial) { delay(10); }   // harmless on ESP32; guarantees attach
 
@@ -135,7 +78,6 @@ void setup() {
   web_setup();
 
   SERIALPRINT_LN("Ready for action!");
-  delay(200);
   
   #if defined(MINE_ON_MASTER)
     masterMiner = new MinerClient(DUCO_USER, true);
@@ -154,60 +96,13 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
 
-  // if (reportTimer.shouldRun()) {
-  //   Serial.print("[ ]");
-  //   Serial.println("FreeRam: " + String(ESP.getFreeHeap()) + " " + clients_string());
-  //   ws_send_all("FreeRam: " + String(ESP.getFreeHeap()) + " - " + clients_string());
-  //   clients_report(REPORT_INTERVAL);
-  // }
-
   web_loop();
-
-  if(scanTimer.shouldRun()) {
-    //I2C.scan(true);
-
-    // Ping & query heap metrics
-    
-    // for (uint8_t idx = 0; idx < I2C.getFoundSlaveCount(); idx++) {
-    //   uint8_t addr = I2C.getFoundSlave(idx);
-    //   if (!I2C.probe(addr)) continue;
-
-      // if (I2C.ping(addr)) {
-      //   Serial.printf("Addr 0x%02X: ping OK\n", addr);
-
-      //   // uint32_t heap;
-      //   // if (I2C.queryHeap(addr, heap)) {
-      //   //   Serial.printf("  Heap: %u bytes\n", heap);
-      //   // }
-
-      //   uint32_t uptime;
-      //   if (I2C.queryUptime(addr, uptime)) {
-      //     Serial.printf("  Uptime: %lu ms. %u mins %u secs\n",
-      //         (unsigned long)uptime, (unsigned int)uptime/60000, (unsigned int)(uptime%60000)/1000 );
-      //   }
-
-      //   #if defined(TEST_FUNCS)
-      //     if(testSendBytes > 0) {
-      //       if (!I2C.testSend(addr, testSendBytes++)) {
-      //         DEBUGPRINT("Test send of ");
-      //         DEBUGPRINT(testSendBytes);
-      //         DEBUGPRINT_LN(" bytes FAILED");
-      //       }
-      //     if(testSendBytes > 15) testSendBytes = 4;
-      //     }
-      //   #endif
-      // }
-      
-    //  delay(20);
-    // }
-  }
-
-  #if defined(MINE_ON_MASTER)
-    masterMiner->loop();
-  #endif
 
   slaveMiner->loop();
 
-  // Small delay to keep CPU cool; adjust as needed
-  delay(5);
+  #if defined(MINE_ON_MASTER)
+    masterMiner->loop();
+    // Small delay to keep CPU cool; adjust as needed
+    delay(5);
+  #endif
 }

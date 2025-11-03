@@ -39,9 +39,10 @@
 #define APP_NAME_SLAVE  "Official AVR Miner "
 #define APP_VERSION     "4.3"
 
-// Optional: pool/port, pins, etc.
-// #define DUCO_POOL "server.duinocoin.com"
-// #define DUCO_PORT 2813
+#define I2C_SDA     21
+#define I2C_SCL     22
+#define I2C_FREQ    100000UL
+#define MAX_I2C_WORKERS 30
 
 #ifdef SERIAL_PRINT
   #define SERIALBEGIN()             Serial.begin(115200)

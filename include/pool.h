@@ -35,7 +35,7 @@ struct PoolEventData {
   const Job *jobDataPtr;
 };
 // C-style callback to avoid pulling in <functional>
-typedef void (*PoolEventCallback)(PoolEvent ev, const PoolEventData& data);
+typedef void (*PoolEventCallback)(PoolEvent ev, const PoolEventData& data, void *user);
 
 class Pool {
   public:
@@ -60,9 +60,11 @@ class Pool {
 
     void setMiningKey(String new_mining_key);
 
-    // Register a generic event callback
-    void onEvent(PoolEventCallback cb);
-
+    // ---- Event API ----
+    bool addEventListener(PoolEventCallback cb, void* user);
+    bool removeEventListener(PoolEventCallback cb, void* user);
+    void clearEventListeners();
+    
   private:
     // callback
     PoolEventCallback _cb = nullptr;
@@ -94,6 +96,16 @@ class Pool {
     // Error
     String _last_err;
 
+    // ---- Multi-listener storage ----
+    struct _Listener {
+      PoolEventCallback cb = nullptr;
+      void* user = nullptr;
+    };
+
+    static constexpr uint8_t _MAX_LISTENERS = 3;  // adjust if you need more
+    _Listener _listeners[_MAX_LISTENERS];
+    uint8_t _listenerCount = 0;
+
     // State Machine
     enum DUINO_POOL_STATE : uint8_t {
       POOL_STATE_NONE,
@@ -122,15 +134,18 @@ class Pool {
 
     void _checkMiningKey(String new_mining_key, String ducouser);
 
+    // ---- Emit helpers (now broadcast to all listeners) ----
     inline void _emit(PoolEvent ev, const PoolEventData& d) {
-      if (_cb) _cb(ev, d);
+      for (uint8_t i = 0; i < _listenerCount; ++i) {
+        if (_listeners[i].cb) {
+          _listeners[i].cb(ev, d, _listeners[i].user);
+        }
+      }
     }
 
-    // Helper to emit simple text events
     inline void _emit_text(PoolEvent ev, const char* msg) {
       PoolEventData d; d.text = msg; _emit(ev, d);
     }
-    // Helper to emit just event
     inline void _emit_nodata(PoolEvent ev) {
       PoolEventData d; _emit(ev, d);
     }

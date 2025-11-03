@@ -46,10 +46,47 @@ Pool::Pool(String username, String miningKey, DeviceType type) {
   }
 }
 
-void Pool::onEvent(PoolEventCallback cb) {
-  _cb = cb;
+// ----------------------------------------------------------------------------
+// Multi-listener API
+bool Pool::addEventListener(PoolEventCallback cb, void* user) {
+  if (!cb) return false;
+
+  // prevent duplicate (same pair)
+  for (uint8_t i = 0; i < _listenerCount; ++i) {
+    if (_listeners[i].cb == cb && _listeners[i].user == user) return true;
+  }
+
+  if (_listenerCount >= _MAX_LISTENERS) return false;
+
+  _listeners[_listenerCount].cb   = cb;
+  _listeners[_listenerCount].user = user;
+  ++_listenerCount;
+  return true;
 }
 
+bool Pool::removeEventListener(PoolEventCallback cb, void* user) {
+  for (uint8_t i = 0; i < _listenerCount; ++i) {
+    if (_listeners[i].cb == cb && _listeners[i].user == user) {
+      // compact
+      for (uint8_t j = i + 1; j < _listenerCount; ++j) {
+        _listeners[j - 1] = _listeners[j];
+      }
+      --_listenerCount;
+      return true;
+    }
+  }
+  return false;
+}
+
+void Pool::clearEventListeners() {
+  _listenerCount = 0;
+  for (uint8_t i = 0; i < _MAX_LISTENERS; ++i) {
+    _listeners[i].cb   = nullptr;
+    _listeners[i].user = nullptr;
+  }
+}
+
+// ------- Connection ---------
 bool Pool::isConnected() {
   return _client.connected() && _poolConnectTime > 0;
 }
@@ -153,7 +190,7 @@ void Pool::loop() {
   case POOL_STATE_SHARE_WAIT:
     // No-op
     break;
-    
+
   case POOL_STATE_SUBMITTED:
     _handleSubmitJobResponse();
     _setState(POOL_STATE_IDLE);     // our work is done
@@ -274,8 +311,19 @@ Job* Pool::getJob() {
 
 bool Pool::submitJob(uint32_t foundNonce, uint32_t elapsedTimeUS, String workerId) {
   String wrkId = workerId.isEmpty() ? _workerId : workerId;
+  float hashrate = foundNonce / (elapsedTimeUS * 0.000001f);
+  #if defined(SERIAL_PRINT)
+    if(hashrate < 80) {
+      SERIALPRINT("[POOL] ");
+      SERIALPRINT(_workerId);
+      SERIALPRINT(" using modified hash rate as < 80. Nonce: ");
+      SERIALPRINT(foundNonce);
+      SERIALPRINT(" hr: ");
+      SERIALPRINT_LN(hashrate);
+    }
+  #endif
   String submit = String(foundNonce)
-                + SEP_TOKEN + String(foundNonce / (elapsedTimeUS * 0.000001f))
+                + SEP_TOKEN + String((hashrate<80) ? 80 + (foundNonce/10.0f) : hashrate )
                 + SEP_TOKEN + _appName
                 + SEP_TOKEN + _minerName
                 + SEP_TOKEN + String("DUCOID") + wrkId
@@ -369,6 +417,7 @@ bool Pool::_recvJobTriplet(String& seed40, String& target40, uint16_t& diff) {
   return false;
 }
 
+// Handle the response after a share has been submitted
 bool Pool::_handleSubmitJobResponse() {
   String resp;
   if (!_readLine(resp, CLIENT_TIMEOUT_RW)) return false;

@@ -152,45 +152,6 @@ bool I2CMaster::queryUniqueId(uint8_t address, uint8_t id[8]) {
     return _getResponse(address, 8, id);
 }
 
-
-#if defined(TEST_FUNCS)
-bool I2CMaster::testSend(uint8_t address, uint8_t bytesToSend) {
-    if(bytesToSend > 64) {
-        DEBUGPRINT_LN("Way too many bytes even for a test ... ");
-        return false;
-    }
-
-    uint8_t data[bytesToSend];
-    for(uint8_t x = 0; x < bytesToSend; x++) {
-        data[x] = x;
-    }
-    _sendCmd(address, CMD_TEST_SEND, data, bytesToSend);
-
-    uint32_t start = millis();
-    while (millis() - start < _timeout) {
-        if (Wire.requestFrom((int)address, 4) == 4) {
-            uint8_t status = Wire.read();
-            uint8_t count = Wire.read();
-            uint8_t checksum = Wire.read();
-            uint8_t crc = Wire.read();
-            DEBUGPRINT_LN("SEND TEST RTN: " + String(status, HEX)
-                + "\n  - Count:  " + String(count)
-                + "\n  - ChkSum: " + String(checksum)
-                + "\n  - crc8:   " + String(crc)
-            );
-            return true;
-        }
-        delay(5);
-    }
-    return false;
-}
-
-bool I2CMaster::testDumpData(uint8_t address) {
-    return _sendCmd(address, CMD_TEST_DUMP_DATA);
-}
-
-#endif
-
 bool I2CMaster::sendDataBegin(uint8_t address) {
     if(!_sendCmd(address, CMD_BEGIN_DATA)) return false;
 
@@ -281,7 +242,7 @@ bool I2CMaster::sendJobData(uint8_t address, const char *previousHashStr,
     DEBUGPRINT("[I2C] sending job to 0x");
     DEBUGPRINT_HEX(address);
     DEBUGPRINT_LN();
-    
+
     uint8_t resp[4];    // max response size
     String ehString = String(expectedHashStr);
     uint8_t expectedHash[20];
@@ -321,15 +282,28 @@ bool I2CMaster::getSlaveIsIdle(uint8_t address) {
     return ( resp[0] == 0xAA ) ? true : false;
 }
 
-bool I2CMaster::getJobStatus(uint8_t address, uint16_t &foundNonce, uint8_t &timeTakenMs) {
+bool I2CMaster::getJobStatus(uint8_t address) {
     if( !_sendCmd(address, CMD_GET_JOB_STATUS) ) return false;
 
     uint8_t resp[4];
-    if(!_getResponse(address, 4, resp)) return false;
+    if(!_getResponse(address, 1, resp)) return false;
+    return ( resp[0] == 0xAA);
+}
+
+bool I2CMaster::getJobResult(uint8_t address, uint16_t &foundNonce, uint16_t &timeTakenMs) {
+    if( !getJobStatus(address) ) {
+        return false;
+    }
+
+    if( !_sendCmd(address, CMD_GET_JOB_RESULT) ) return false;
+
+    uint8_t resp[5];
+    if(!_getResponse(address, 5, resp)) return false;
     if( resp[0] == 0xAA) {
-        foundNonce = (uint16_t)resp[1];
-        foundNonce |= (uint16_t)resp[2] << 8;
-        timeTakenMs = resp[3];
+        foundNonce   = (uint16_t)resp[1];
+        foundNonce  |= (uint16_t)resp[2] << 8;
+        timeTakenMs  = (uint16_t)resp[3];
+        timeTakenMs |= (uint16_t)resp[4] << 8;
 
         DEBUGPRINT("[I2C] Job Status True: \n   - Nonce: ");
         DEBUGPRINT(foundNonce);
@@ -416,7 +390,7 @@ bool I2CMaster::_getResponse(uint8_t address, uint8_t respLength, uint8_t data[]
             while(Wire.available()) Wire.read();    // flush
             return true;
         }
-        delay(5);
+        delay(2);
     }
     return false;
 }

@@ -103,17 +103,17 @@ void blinkStatus(BLINK_STATUSES b) {
     break;
   case BLINK_SHARE_SOLVED:
     #if defined(LED_MODE) && LED_MODE == 2
-      blink(2, 0x00FFFF00);  // yellow
+      blink(1, 0x00FFBF00);
     #endif
     break;
   case BLINK_SLAVE_SHARE_GOOD:
     #if defined(LED_MODE) && LED_MODE == 2
-      blink(2, 0x000000FF);  // green
+      blink(1, 0x0000FA00);
     #endif
     break;
   case BLINK_SHARE_GOOD:
     #if defined(LED_MODE) && LED_MODE == 2
-      blink(2, 0x000000FF);  // green
+      blink(1, 0x000000FF);
     #endif
     break;
   case BLINK_SHARE_BLOCKFOUND:
@@ -127,7 +127,7 @@ void blinkStatus(BLINK_STATUSES b) {
     break;
   case BLINK_SHARE_ERROR:
     #if defined(LED_MODE) && LED_MODE == 2
-      blink(5, 0x00FF0000);  // red
+      blink(4, 0x00FF0000);  // red
     #endif
     break;
   

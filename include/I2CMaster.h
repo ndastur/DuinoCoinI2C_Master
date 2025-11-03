@@ -1,11 +1,7 @@
 #pragma once
+#include "config.h"
 #include <Arduino.h>
 #include <Wire.h>
-
-#define I2C_SDA     21
-#define I2C_SCL     22
-#define I2C_FREQ    100000UL
-#define MAX_I2C_WORKERS 30
 
 class I2CMaster {
 public:
@@ -67,8 +63,11 @@ public:
 
     bool getSlaveIsIdle(uint8_t address);
 
+    // Get the status of the job. Minimal I2C
+    bool getJobStatus(uint8_t address);
+
     // Get the status of the job and if found the nonce and timings
-    bool getJobStatus(uint8_t address, uint16_t &foundNonce, uint8_t &timeTakenMs);
+    bool getJobResult(uint8_t address, uint16_t &foundNonce, uint16_t &timeTakenMs);
 
 private:
     int _sdaPin;
@@ -82,9 +81,6 @@ private:
     uint8_t _slaveCount = 0;
     I2C_SLAVE _slaves[MAX_I2C_WORKERS];
 
-    // uint8_t _slaves[MAX_I2C_WORKERS];
-    // char _slaveUniqueIDs [MAX_I2C_WORKERS][(8*2)+1];
-
     // Protocol command IDs
     static constexpr uint8_t CMD_VERSION    = 0x02;
     static constexpr uint8_t CMD_GET_UPTIME = 0x06;
@@ -95,11 +91,9 @@ private:
 
     static constexpr uint8_t CMD_GET_IS_IDLE    = 0x30;
     static constexpr uint8_t CMD_GET_JOB_STATUS = 0x32;
-    static constexpr uint8_t CMD_GET_JOB_DATA   = 0x35;
-    static constexpr uint8_t CMD_GET_UNIQUEID   = 0x40;
+    static constexpr uint8_t CMD_GET_JOB_RESULT = 0x33;
 
-    static constexpr uint8_t CMD_TEST_SEND  = 0x90;
-    static constexpr uint8_t CMD_TEST_DUMP_DATA  = 0x92;
+    static constexpr uint8_t CMD_GET_UNIQUEID   = 0x40;
 
     bool _sendCmd(uint8_t address, const uint8_t cmd, const uint8_t data[] = nullptr, uint8_t len = 0, bool sendStop = true);
     // Get response from slave

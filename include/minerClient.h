@@ -11,7 +11,6 @@
 
 #define CLIENT_CONNECT_EVERY 30000
 #define AVR_WORKER_MINER "AVR I2C v4.3"
-#define MAX_SLAVES 10
 
 // --- Events ---
 enum MinerEvent : uint8_t {
@@ -72,6 +71,8 @@ class MinerClient {
     // The starting diff can be a number but also worker type (AVR | ESP32 | ESP32S (single core))
     bool _isMasterMiner = false;
 
+    RunEvery _reportTimer = RunEvery(30 * 1000);
+
     I2CMaster* _i2c = nullptr;
     int _numMinerClients;
     struct ClientStruct
@@ -84,22 +85,32 @@ class MinerClient {
       char seed[41] = {0};
       char target[41] = {0};
       uint32_t diff = 0;
-      RunEvery slaveMiningStatusTimer = RunEvery(150);
-      RunEvery slaveJobReqTimer = RunEvery(50);
+      uint32_t lastNonce = 0;
+      uint16_t lastTimeTakenMs = 0;
+      float lastHashRate = 0;
+      // How often the slave should be pinged to check for a result
+      RunEvery slaveMiningStatusTimer = RunEvery(40);
+      // Minimum time to re-request job from the pool
+      RunEvery slaveJobReqTimer = RunEvery(25);
 
       // Stats
-      unsigned int stats_share_count = 0;
-      unsigned int stats_accepted_count = 0;
-      unsigned int stats_block_count = 0;
+      uint32_t startTimeMs = 0;
+      uint32_t stats_share_count = 0;
+      uint32_t stats_good_count = 0;
+      uint32_t stats_block_count = 0;
+      uint32_t stats_bad_count = 0;
+
+      uint16_t lowestHashWithError = INT16_MAX;
+      uint16_t highestHashWithError = 0;
     };
     
-    ClientStruct _clients[MAX_SLAVES];
+    ClientStruct _clients[MAX_I2C_WORKERS];
     bool _isMining = false;
     DSHA1 *_dsha1;
 
     // hashrate calc
-    uint32_t _last_hashed_per_sec = 0;
-    float _last_hashrate_khs = 0.0f;
+    uint32_t _masterLastHashedPerSec = 0;
+    float _masterLastHashrateKhs = 0.0f;
 
     // Error
     String _last_err;
@@ -110,14 +121,16 @@ class MinerClient {
     void _setState(DUINO_STATE state, int idx);
     bool _isStateStuck(int idx);
 
-    bool _max_micros_elapsed(unsigned long current, unsigned long max_elapsed);
-    void _handleSystemEvents();
-    void _set_chip_id();
+    static void _poolEventSink(PoolEvent ev, const PoolEventData& d, void *user);
     
-    // Protocol steps
-    bool _handleMotd();
     bool _solveAndSubmit(const char *seed40, const char *target40, uint32_t diff);
 
+    bool _max_micros_elapsed(unsigned long current, unsigned long max_elapsed);
+    void _handleSystemEvents();
+
+    void _printReport();
+
+    // Event functions
     inline void _emit(MinerEvent ev, const MinerEventData& d) {
       if (_cb) _cb(ev, d);
     }
